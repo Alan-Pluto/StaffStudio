@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -11,8 +11,10 @@ from app.api.model_configs import (
     _verification_probe_tokens,
     create_model_config,
     set_default_model_config,
-    test_model_config as run_model_config_test,
     update_model_config,
+)
+from app.api.model_configs import (
+    test_model_config as run_model_config_test,
 )
 from app.db.models import ModelConfig, Tenant, User
 from app.llm.schemas import ModelConfigCreateRequest, ModelConfigUpdateRequest
@@ -168,6 +170,47 @@ def test_unverified_config_cannot_become_default(tmp_path) -> None:
             assert exc.detail == "MODEL_CONFIG_VERIFICATION_REQUIRED"
         else:
             raise AssertionError("unverified config unexpectedly became default")
+
+
+def test_switching_default_clears_existing_row_before_setting_new(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.exec(
+            text(
+                "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+                "ON model_configs(tenant_id) WHERE is_default = 1"
+            )
+        )
+        db.add_all(
+            [
+                ModelConfig(
+                    id="z_previous",
+                    tenant_id="tenant_a",
+                    name="Previous",
+                    api_key_encrypted=encrypt_secret("secret"),
+                    model="model-previous",
+                    trust_status="legacy_trusted",
+                    enabled=True,
+                    is_default=True,
+                ),
+                ModelConfig(
+                    id="a_next",
+                    tenant_id="tenant_a",
+                    name="Next",
+                    api_key_encrypted=encrypt_secret("secret"),
+                    model="model-next",
+                    trust_status="legacy_trusted",
+                    enabled=True,
+                    is_default=False,
+                ),
+            ]
+        )
+        db.commit()
+
+        result = set_default_model_config("a_next", tenant_id="tenant_a", db=db)
+
+        previous = db.get(ModelConfig, "z_previous")
+        assert previous is not None and previous.is_default is False
+        assert result.is_default is True
 
 
 def test_read_returns_only_current_protocol_options(tmp_path) -> None:

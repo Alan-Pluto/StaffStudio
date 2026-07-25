@@ -67,6 +67,20 @@ const BLANK_MODEL_FORM: ModelForm = {
   is_default: false,
   enabled: true,
 };
+
+function modelActionError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('MODEL_DEFAULT_CONFLICT')) {
+    return '默认模型状态已变化，请刷新后重试';
+  }
+  if (message.includes('MODEL_CONFIG_DISABLED')) {
+    return '请先启用该模型，再设为默认';
+  }
+  if (message.includes('MODEL_CONFIG_VERIFICATION_REQUIRED')) {
+    return '请先完成模型测试，再设为默认';
+  }
+  return message || fallback;
+}
 const MODEL_CONFIGS_UPDATED_EVENT = 'ultrarag-enterprise-model-configs-updated';
 
 export default function ModelsPage({
@@ -224,7 +238,7 @@ export default function ModelsPage({
       notify.success('已设为默认');
       await load();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '设为默认失败');
+      notify.error(modelActionError(error, '设为默认失败'));
     }
   }
 

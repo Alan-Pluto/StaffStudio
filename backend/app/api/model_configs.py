@@ -5,6 +5,7 @@ from time import monotonic
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -454,11 +455,14 @@ def _has_available_model(db: Session, tenant_id: str) -> bool:
 
 
 def _clear_default(db: Session, tenant_id: str) -> None:
-    rows = db.exec(select(ModelConfig).where(ModelConfig.tenant_id == tenant_id)).all()
-    for row in rows:
-        row.is_default = False
-        row.updated_at = utc_now()
-        db.add(row)
+    db.exec(
+        update(ModelConfig)
+        .where(
+            ModelConfig.tenant_id == tenant_id,
+            ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
+        )
+        .values(is_default=False, updated_at=utc_now())
+    )
 
 
 def _request_protocol_options(
