@@ -2,13 +2,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.channels as channels_api
-from app.channels.schema import channel_binding_read
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
+from app.channels.schema import channel_binding_read
 from app.db import get_session
-from app.db.models import AgentProfile, ChannelBinding, ChannelDelivery, Tenant, User, utc_now
+from app.db.models import (
+    AgentProfile,
+    ChannelBinding,
+    ChannelDelivery,
+    ChannelInboundEvent,
+    Tenant,
+    User,
+    utc_now,
+)
 from app.security.auth import create_access_token
 
 
@@ -116,7 +124,7 @@ def test_unsupported_channel_rejected() -> None:
 
     response = client.post(
         "/api/enterprise/channels",
-        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "feishu"},
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "slack"},
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
@@ -353,6 +361,46 @@ def test_delete_binding(monkeypatch) -> None:
     binding_id = _seed_binding(engine, status="active")
     client = _make_client(engine)
     monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+    with Session(engine) as db:
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                session_id="deleted_session",
+                message_id="deleted_message",
+                target_json={},
+                text="pending reply",
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key="deleted_message",
+            )
+        )
+        for status in ("received", "processing"):
+            db.add(
+                ChannelInboundEvent(
+                    tenant_id="tenant_demo",
+                    binding_id=binding_id,
+                    channel="wechat",
+                    event_id=f"event_{status}",
+                    status=status,
+                    processor_run_id="old-process" if status == "processing" else None,
+                )
+            )
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                session_id="deleted_session",
+                message_id="sending_message",
+                target_json={},
+                text="in-flight reply",
+                status="sending",
+                attempts=1,
+                first_attempt_at=utc_now(),
+                idempotency_key="sending_message",
+            )
+        )
+        db.commit()
 
     forbidden = client.delete(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
@@ -367,6 +415,41 @@ def test_delete_binding(monkeypatch) -> None:
     assert deleted.status_code == 204
     with Session(engine) as db:
         assert db.get(ChannelBinding, binding_id) is None
+        deliveries = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.binding_id == binding_id)
+        ).all()
+        assert len(deliveries) == 2
+        assert all(row.status == "failed" for row in deliveries)
+        errors = {row.message_id: row.last_error for row in deliveries}
+        assert errors == {
+            "deleted_message": "binding_deleted",
+            "sending_message": "binding_deleted_remote_unknown",
+        }
+        assert all(row.next_attempt_at is None for row in deliveries)
+        events = db.exec(
+            select(ChannelInboundEvent).where(ChannelInboundEvent.binding_id == binding_id)
+        ).all()
+        assert {row.event_id: row.error for row in events} == {
+            "event_received": "binding_deleted",
+            "event_processing": "binding_deleted_incomplete_turn",
+        }
+        assert all(row.status == "failed" for row in events)
+
+    audit = client.get(
+        "/api/enterprise/channels/delivery-audit",
+        params={"tenant_id": "tenant_demo", "binding_id": binding_id},
+        headers=_auth(users["admin"]),
+    )
+    assert audit.status_code == 200
+    assert audit.json()["total"] == 2
+    assert audit.json()["items"][0]["binding_id"] == binding_id
+
+    forbidden_audit = client.get(
+        "/api/enterprise/channels/delivery-audit",
+        params={"tenant_id": "tenant_demo"},
+        headers=_auth(users["owner"]),
+    )
+    assert forbidden_audit.status_code == 403
 
 
 def test_deliveries_listing(monkeypatch) -> None:

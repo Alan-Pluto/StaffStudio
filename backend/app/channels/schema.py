@@ -45,6 +45,10 @@ class ChannelBindingRead(BaseModel):
     baseurl: Optional[str] = None
     bot_id: Optional[str] = None
     corp_id: Optional[str] = None
+    app_id: Optional[str] = None
+    bot_open_id: Optional[str] = None
+    bot_name: Optional[str] = None
+    provider_tenant_key: Optional[str] = None
     config_revision: int = 0
     session_expired: bool = False
     bound_at: Optional[str] = None
@@ -83,6 +87,12 @@ class WeComCredentialsRequest(BaseModel):
     secret: str
     # 企业 ID 是企微 userid 的真实唯一边界,首次激活即必须提供
     corp_id: str
+
+
+class FeishuCredentialsRequest(BaseModel):
+    tenant_id: str
+    app_id: str
+    app_secret: str
 
 
 class ChannelCredentialFieldRead(BaseModel):
@@ -191,6 +201,10 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         baseurl=config.get("baseurl"),
         bot_id=config.get("bot_id"),
         corp_id=config.get("corp_id"),
+        app_id=config.get("app_id"),
+        bot_open_id=config.get("bot_open_id"),
+        bot_name=config.get("bot_name"),
+        provider_tenant_key=binding.provider_tenant_key,
         config_revision=binding.config_revision,
         session_expired=bool(config.get("session_expired")),
         bound_at=str(bound_at) if bound_at else None,

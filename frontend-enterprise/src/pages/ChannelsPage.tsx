@@ -41,6 +41,7 @@ import type {
 } from '../types';
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
+import FeishuSetup from './channels/FeishuSetup';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { formatTime, type BadgeTone } from './scheduled-tasks/shared';
 
@@ -66,6 +67,8 @@ const DELIVERY_STATUS_BADGE: Record<string, { tone: BadgeTone; text: string }> =
 const DELIVERY_KIND_LABEL: Record<string, string> = {
   reply: '回复',
   error_notice: '错误通知',
+  reaction_add: '收到确认',
+  reaction_remove: '确认清理',
 };
 
 const WECHAT_COMMANDS: Array<{ command: string; description: string }> = [
@@ -78,6 +81,7 @@ const WECHAT_COMMANDS: Array<{ command: string; description: string }> = [
 const CHANNEL_BLURB: Record<string, string> = {
   wechat: '扫码接入，微信用户直接与数字员工对话。',
   wecom: '填入企业微信智能机器人的凭证完成接入。',
+  feishu: '填入飞书应用凭证，通过长连接接入数字员工。',
 };
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -502,9 +506,19 @@ export default function ChannelsPage({
     return metaFor(channel)?.setup || (channel === 'wechat' ? 'qrcode' : 'credentials');
   }
 
-  const bindingStatus = binding ? BINDING_STATUS_BADGE[binding.status] : undefined;
+  function bindingStatusFor(item: ChannelBindingRead): { tone: BadgeTone; text: string } {
+    if (item.status === 'pending' && setupKindFor(item.channel) !== 'qrcode') {
+      return { tone: 'blue', text: '待配置' };
+    }
+    return BINDING_STATUS_BADGE[item.status] || {
+      tone: 'gray',
+      text: item.status,
+    };
+  }
+
+  const bindingStatus = binding ? bindingStatusFor(binding) : undefined;
   // bot_id / ilink_bot_id 是 DTO 顶层字段(后端不回传 config_json)
-  const botId = binding?.ilink_bot_id || binding?.bot_id || '';
+  const botId = binding?.ilink_bot_id || binding?.bot_id || binding?.app_id || '';
   const mountedAgents = binding?.agents || [];
   const conversationGroups = groupByDay(conversations, (item) => item.updated_at);
 
@@ -558,7 +572,7 @@ export default function ChannelsPage({
       ) : (
         <div className="grid gap-[12px]">
           {bindings.map((item) => {
-            const status = BINDING_STATUS_BADGE[item.status];
+            const status = bindingStatusFor(item);
             return (
               <article
                 key={item.id}
@@ -655,7 +669,17 @@ export default function ChannelsPage({
             </UIButton>
           </div>
         </div>
-        {setupKindFor(binding.channel) === 'credentials' ? (
+        {binding.channel === 'feishu' ? (
+          <FeishuSetup
+            key={binding.id}
+            binding={binding}
+            onChanged={(updated) =>
+              setBindings((current) =>
+                current.map((item) => (item.id === updated.id ? updated : item)),
+              )
+            }
+          />
+        ) : setupKindFor(binding.channel) === 'credentials' ? (
           <WecomSetup
             key={binding.id}
             binding={binding}

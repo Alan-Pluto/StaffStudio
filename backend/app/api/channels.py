@@ -6,7 +6,7 @@ import secrets
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import text
+from sqlalchemy import case, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -17,14 +17,18 @@ from app.channels import (
     resume_binding_ingress,
     wait_binding_ingress_stopped,
 )
+from app.channels.adapters.feishu import (
+    FeishuPermanentError,
+    validate_feishu_credentials,
+)
 from app.channels.adapters.wechat import WeChatClient, sanitize_wechat_baseurl, validate_wechat_host
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import (
+    ChannelBindCodeRead,
     ChannelBindingAgentRead,
     ChannelBindingAgentsUpdate,
     ChannelBindingCreate,
     ChannelBindingRead,
-    ChannelBindCodeRead,
     ChannelConversationMessageRead,
     ChannelConversationPage,
     ChannelConversationRead,
@@ -34,6 +38,7 @@ from app.channels.schema import (
     ChannelMetaRead,
     ChannelQRCodeRead,
     ChannelQRCodeStatusRead,
+    FeishuCredentialsRequest,
     MyIdentityBindingRead,
     WeComCredentialsRequest,
     channel_binding_agents_read,
@@ -56,12 +61,13 @@ from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
     AgentProfile,
+    ChannelBindCode,
     ChannelBinding,
     ChannelBindingAgent,
-    ChannelBindCode,
     ChannelConvState,
     ChannelDelivery,
     ChannelIdentity,
+    ChannelInboundEvent,
     ChatSession,
     Message,
     User,
@@ -106,7 +112,7 @@ def _patch_binding_config_key(
     if result.rowcount != 1:
         raise HTTPException(status_code=404, detail="渠道绑定不存在")
 
-SUPPORTED_CHANNELS = {"wechat", "wecom"}
+SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
 
 # 渠道描述:前端接入页据此渲染渠道卡片与凭证表单,新渠道只加条目不动页面骨架
@@ -132,6 +138,16 @@ CHANNEL_META = [
                 "secret": False,
                 "optional": False,
             },
+        ],
+        "capabilities": [],
+    },
+    {
+        "channel": "feishu",
+        "name": "飞书",
+        "setup": "credentials",
+        "credential_fields": [
+            {"key": "app_id", "label": "App ID", "placeholder": "cli_xxx", "secret": False},
+            {"key": "app_secret", "label": "App Secret", "placeholder": None, "secret": True},
         ],
         "capabilities": [],
     },
@@ -462,9 +478,69 @@ def delete_channel_binding(
         should_run = bool(binding.status == "active" and binding.credentials_enc)
         db.rollback()
         _quiesce_binding_or_409(channel, binding_id, should_run=should_run)
+        from app.channels.service_intake import pause_binding_intake, resume_binding_intake
+
+        if not pause_binding_intake(binding_id, INGRESS_QUIESCE_TIMEOUT_SECONDS):
+            resume_binding_intake(binding_id)
+            _resume_binding(channel, binding_id, start=should_run)
+            raise HTTPException(status_code=409, detail="渠道消息仍在处理中，请稍后重试删除")
         try:
             binding = _get_binding(db, tenant_id, binding_id)
             _ensure_revision(binding, expected_revision)
+            if binding.channel == "feishu":
+                from app.channels.service_outbox import (
+                    cleanup_feishu_reactions_before_binding_delete,
+                )
+
+                try:
+                    cleanup_feishu_reactions_before_binding_delete(db, binding)
+                except Exception as exc:
+                    logger.warning(
+                        "删除飞书绑定前清理 reaction 失败 binding=%s: %s",
+                        binding.id,
+                        exc,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail="飞书消息确认尚未清理，请稍后重试删除",
+                    ) from exc
+            db.exec(
+                update(ChannelDelivery)
+                .where(
+                    ChannelDelivery.tenant_id == tenant_id,
+                    ChannelDelivery.binding_id == binding.id,
+                    ChannelDelivery.status.in_({"pending", "sending"}),
+                )
+                .values(
+                    status="failed",
+                    next_attempt_at=None,
+                    last_error=case(
+                        (ChannelDelivery.status == "sending", "binding_deleted_remote_unknown"),
+                        else_="binding_deleted",
+                    ),
+                    updated_at=utc_now(),
+                )
+            )
+            db.exec(
+                update(ChannelInboundEvent)
+                .where(
+                    ChannelInboundEvent.tenant_id == tenant_id,
+                    ChannelInboundEvent.binding_id == binding.id,
+                    ChannelInboundEvent.status.in_({"received", "processing"}),
+                )
+                .values(
+                    status="failed",
+                    processor_run_id=None,
+                    error=case(
+                        (
+                            ChannelInboundEvent.status == "processing",
+                            "binding_deleted_incomplete_turn",
+                        ),
+                        else_="binding_deleted",
+                    ),
+                    updated_at=utc_now(),
+                )
+            )
             # 同事务级联删除挂载行与路由指针
             for mount in db.exec(
                 select(ChannelBindingAgent).where(ChannelBindingAgent.binding_id == binding.id)
@@ -478,6 +554,7 @@ def delete_channel_binding(
             db.commit()
         except Exception:
             db.rollback()
+            resume_binding_intake(binding_id)
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=False)
@@ -788,6 +865,132 @@ def save_wecom_credentials(
             raise
         _resume_binding(channel, binding_id, start=True)
     return channel_binding_read(db, binding)
+
+
+@router.post("/{binding_id}/feishu/credentials", response_model=ChannelBindingRead)
+def save_feishu_credentials(
+    binding_id: str,
+    request: FeishuCredentialsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingRead:
+    """Validate and save Feishu app credentials, then start its long connection."""
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    binding = _get_binding(db, request.tenant_id, binding_id)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    if binding.channel != "feishu":
+        raise HTTPException(status_code=400, detail="该绑定不是飞书渠道")
+    app_id = request.app_id.strip()
+    app_secret = request.app_secret.strip()
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=400, detail="App ID 与 App Secret 均不能为空")
+    old_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
+    if old_app_id and old_app_id != app_id:
+        raise HTTPException(status_code=400, detail="应用变更不允许直接修改，请删除后重新创建绑定")
+    try:
+        bot_info = validate_feishu_credentials(app_id, app_secret)
+    except FeishuPermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("验证飞书凭证失败 binding=%s", binding_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="飞书凭证验证暂时失败，请稍后重试") from exc
+
+    account_key = external_account_key("feishu", {"app_id": app_id})
+    if not account_key:
+        raise HTTPException(status_code=400, detail="App ID 无效")
+    _ensure_external_account_available(db, account_key, binding_id)
+    db.rollback()
+    with binding_lifecycle_lock(binding_id):
+        binding = _get_binding(db, request.tenant_id, binding_id)
+        expected_revision = binding.config_revision
+        channel = binding.channel
+        should_run = bool(binding.status == "active" and binding.credentials_enc)
+        current_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
+        if current_app_id and current_app_id != app_id:
+            raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+        db.rollback()
+        _quiesce_binding_or_409(channel, binding_id, should_run=should_run)
+        try:
+            binding = _get_binding(db, request.tenant_id, binding_id)
+            _ensure_revision(binding, expected_revision)
+            latest_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
+            if latest_app_id and latest_app_id != app_id:
+                raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+            _ensure_external_account_available(db, account_key, binding_id)
+            config = dict(binding.config_json or {})
+            config.update(
+                {
+                    "app_id": app_id,
+                    "bot_open_id": bot_info["bot_open_id"],
+                    "bot_name": bot_info.get("bot_name", ""),
+                    "bound_at": utc_now().isoformat(),
+                }
+            )
+            binding.credentials_enc = encrypt_channel_secret(app_secret)
+            binding.config_json = config
+            binding.external_account_key = account_key
+            binding.config_revision += 1
+            binding.status = "active"
+            binding.connected = False
+            binding.updated_at = utc_now()
+            db.add(binding)
+            adopt_orphan_channel_sessions(db, binding)
+            db.commit()
+            db.refresh(binding)
+        except IntegrityError as exc:
+            db.rollback()
+            _resume_binding(channel, binding_id, start=should_run)
+            raise HTTPException(status_code=409, detail="该飞书应用已被其他渠道绑定使用") from exc
+        except Exception:
+            db.rollback()
+            _resume_binding(channel, binding_id, start=should_run)
+            raise
+        _resume_binding(channel, binding_id, start=True)
+    return channel_binding_read(db, binding)
+
+
+@router.get("/delivery-audit", response_model=ChannelDeliveryPage)
+def list_tenant_delivery_audit(
+    tenant_id: str = Query(...),
+    binding_id: str | None = Query(None),
+    session_id: str | None = Query(None),
+    status: str | None = Query("failed"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelDeliveryPage:
+    """Tenant-admin audit that remains available after a binding is deleted."""
+    ensure_current_user_tenant(tenant_id, current_user)
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only administrators can audit channel deliveries")
+    from sqlalchemy import func
+
+    filters = [ChannelDelivery.tenant_id == tenant_id]
+    if binding_id:
+        filters.append(ChannelDelivery.binding_id == binding_id)
+    if session_id:
+        filters.append(ChannelDelivery.session_id == session_id)
+    if status:
+        if status not in {"pending", "sending", "delivered", "failed"}:
+            raise HTTPException(status_code=400, detail="Invalid delivery status")
+        filters.append(ChannelDelivery.status == status)
+    total = db.exec(
+        select(func.count()).select_from(ChannelDelivery).where(*filters)
+    ).one()
+    rows = db.exec(
+        select(ChannelDelivery)
+        .where(*filters)
+        .order_by(ChannelDelivery.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return ChannelDeliveryPage(
+        items=[channel_delivery_read(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/{binding_id}/deliveries", response_model=ChannelDeliveryPage)
