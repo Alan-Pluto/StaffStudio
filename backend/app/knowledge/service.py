@@ -703,9 +703,12 @@ class KnowledgeService:
         with observed_span(
             "knowledge_span", "knowledge.rank_chunks", candidate_count=len(chunks)
         ) as span:
-            ranked_hits = _rank_chunks(query, chunks, selected_buckets, expanded_sections)[
-                : request.max_chunks
-            ]
+            ranked_candidates = _rank_chunks(
+                query, chunks, selected_buckets, expanded_sections
+            )
+            ranked_hits = _select_diverse_chunk_hits(
+                ranked_candidates, selected_buckets, request.max_chunks
+            )
             ranked_chunks = _expand_related_chunks(ranked_hits, chunks)
             span.finish(selected_count=len(ranked_chunks))
         with observed_span(
@@ -715,7 +718,13 @@ class KnowledgeService:
             enabled=request.need_evidence_pack,
         ) as span:
             evidence_pack = (
-                _build_evidence_pack(query, ranked_chunks) if request.need_evidence_pack else []
+                _build_evidence_pack(
+                    query,
+                    ranked_chunks,
+                    direct_hit_ids={chunk.id for chunk in ranked_hits},
+                )
+                if request.need_evidence_pack
+                else []
             )
             span.finish(evidence_count=len(evidence_pack))
         route_trace.extend(
@@ -868,47 +877,65 @@ class KnowledgeService:
             for section in section_sources:
                 self._raise_if_ingest_cancelled(job)
                 content = str(section.get("content") or "")
-                parts = _chunk_text(content, EVIDENCE_CHUNK_CHARS)
                 related_section_id = (
                     section.get("related_section_id")
                     or section.get("section_id")
                     or local_index
                 )
-                related_group_id = f"{document.id}:{bucket.id}:{related_section_id}"
-                related_rows = related_rows_by_group.setdefault(related_group_id, [])
-                for part in parts:
-                    self._raise_if_ingest_cancelled(job)
-                    source_path = f"{document.filename} / {section.get('path') or bucket.title} / evidence {local_index + 1}"
-                    row = KnowledgeChunk(
-                        tenant_id=tenant_id,
-                        knowledge_base_id=knowledge_base_id,
-                        knowledge_base_version_id=document.knowledge_base_version_id,
-                        document_id=document.id,
-                        bucket_id=bucket.id,
-                        chunk_index=local_index,
-                        content=part,
-                        summary=_summarize_text(part, 180),
-                        source_ref=source_path,
-                        metadata_json={
-                            "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
-                            "node_type": "evidence_chunk",
-                            "related_group_id": related_group_id,
-                            "related_chunk_index": len(related_rows),
-                            "section_id": section.get("section_id"),
-                            "section_path": section.get("path"),
-                            "section_title": section.get("title"),
-                            "bucket_title": bucket.title,
-                            "source_span": section.get("source_span") or {},
-                            "context_window": _summarize_text(content, 260),
-                        },
+                part_groups = _chunk_text_related_groups(content, EVIDENCE_CHUNK_CHARS)
+                for group_index, parts in enumerate(part_groups):
+                    related_group_id = (
+                        f"{document.id}:{bucket.id}:{related_section_id}:{group_index}"
                     )
-                    self.db.add(row)
-                    self.db.flush()
-                    related_rows.append(row)
-                    chunk_ids_by_bucket.setdefault(bucket.id, []).append(row.id)
-                    count += 1
-                    local_index += 1
+                    related_rows = related_rows_by_group.setdefault(related_group_id, [])
+                    for part in parts:
+                        self._raise_if_ingest_cancelled(job)
+                        source_path = f"{document.filename} / {section.get('path') or bucket.title} / evidence {local_index + 1}"
+                        row = KnowledgeChunk(
+                            tenant_id=tenant_id,
+                            knowledge_base_id=knowledge_base_id,
+                            knowledge_base_version_id=document.knowledge_base_version_id,
+                            document_id=document.id,
+                            bucket_id=bucket.id,
+                            chunk_index=local_index,
+                            content=part,
+                            summary=_summarize_text(part, 180),
+                            source_ref=source_path,
+                            metadata_json={
+                                "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
+                                "node_type": "evidence_chunk",
+                                "related_group_id": related_group_id,
+                                "related_chunk_index": len(related_rows),
+                                "section_id": section.get("section_id"),
+                                "section_path": section.get("path"),
+                                "section_title": section.get("title"),
+                                "bucket_title": bucket.title,
+                                "source_span": section.get("source_span") or {},
+                                "context_window": _summarize_text(content, 260),
+                            },
+                        )
+                        self.db.add(row)
+                        self.db.flush()
+                        related_rows.append(row)
+                        chunk_ids_by_bucket.setdefault(bucket.id, []).append(row.id)
+                        count += 1
+                        local_index += 1
             for related_rows in related_rows_by_group.values():
+                if len(related_rows) == 1:
+                    row = related_rows[0]
+                    row_metadata = dict(row.metadata_json or {})
+                    row_metadata.update(
+                        {
+                            "related_group_id": None,
+                            "related_chunk_ids": [],
+                            "related_chunk_count": 0,
+                            "related_previous_chunk_id": None,
+                            "related_next_chunk_id": None,
+                        }
+                    )
+                    row.metadata_json = row_metadata
+                    self.db.add(row)
+                    continue
                 for related_index, row in enumerate(related_rows):
                     related_window = _related_chunk_window(related_rows, related_index)
                     related_ids = [item.id for item in related_window]
@@ -1456,6 +1483,42 @@ def _chunk_text(text: str, max_chars: int) -> list[str]:
             chunks.append(chunk)
         cursor = max(end, cursor + 1)
     return chunks or [text.strip()]
+
+
+def _chunk_text_related_groups(text: str, max_chars: int) -> list[list[str]]:
+    paragraphs = _paragraph_blocks(text)
+    if not paragraphs:
+        chunks = _chunk_text(text, max_chars)
+        return [chunks] if chunks else []
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush_current() -> None:
+        nonlocal current, current_len
+        if current:
+            groups.append(["\n\n".join(current).strip()])
+            current = []
+            current_len = 0
+
+    for paragraph in paragraphs:
+        if _heading_info(paragraph):
+            flush_current()
+            continue
+        parts = _split_large_paragraph(paragraph, max_chars)
+        if len(parts) > 1:
+            flush_current()
+            groups.append(parts)
+            continue
+        part = parts[0]
+        projected = current_len + len(part) + (2 if current else 0)
+        if current and projected > max_chars:
+            flush_current()
+        current.append(part)
+        current_len += len(part) + (2 if current_len else 0)
+    flush_current()
+    return [group for group in groups if any(part.strip() for part in group)]
 
 
 def _paragraph_blocks(text: str) -> list[str]:
@@ -2010,6 +2073,35 @@ def _rank_chunks(
     return [chunk for _score, chunk in scored]
 
 
+def _select_diverse_chunk_hits(
+    ranked_chunks: list[KnowledgeChunk],
+    selected_buckets: list[KnowledgeBucket],
+    max_chunks: int,
+) -> list[KnowledgeChunk]:
+    if max_chunks <= 0:
+        return []
+    selected_ids: set[str] = set()
+    diversity_slots = min(len(selected_buckets), max(1, max_chunks - 1))
+    for bucket in selected_buckets[:diversity_slots]:
+        match = next(
+            (
+                chunk
+                for chunk in ranked_chunks
+                if chunk.bucket_id == bucket.id and chunk.id not in selected_ids
+            ),
+            None,
+        )
+        if match is not None:
+            selected_ids.add(match.id)
+        if len(selected_ids) >= max_chunks:
+            break
+    for chunk in ranked_chunks:
+        if len(selected_ids) >= max_chunks:
+            break
+        selected_ids.add(chunk.id)
+    return [chunk for chunk in ranked_chunks if chunk.id in selected_ids]
+
+
 def _expand_related_chunks(
     ranked_hits: list[KnowledgeChunk],
     candidates: list[KnowledgeChunk],
@@ -2095,13 +2187,19 @@ def _related_chunk_window(
     return [chunks[index] for index in sorted(selected)]
 
 
-def _build_evidence_pack(query: str, chunks: list[KnowledgeChunk]) -> list[dict[str, Any]]:
+def _build_evidence_pack(
+    query: str,
+    chunks: list[KnowledgeChunk],
+    direct_hit_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
+    direct_hit_ids = direct_hit_ids or set()
     for chunk in chunks:
         metadata = chunk.metadata_json or {}
         score = _score_text(query, f"{chunk.summary or ''} {chunk.content}")
         related_group_id = str(metadata.get("related_group_id") or "").strip()
-        if score < SEARCH_MIN_EVIDENCE_SCORE and not related_group_id:
+        is_direct_hit = chunk.id in direct_hit_ids or not direct_hit_ids
+        if score < SEARCH_MIN_EVIDENCE_SCORE and not related_group_id and not is_direct_hit:
             continue
         evidence.append(
             {
@@ -2119,6 +2217,8 @@ def _build_evidence_pack(query: str, chunks: list[KnowledgeChunk]) -> list[dict[
                 "relevance_score": round(score, 2),
                 "confidence_reason": (
                     "与命中片段属于同一连续章节"
+                    if not is_direct_hit
+                    else "章节标题、路径、摘要或正文与查询相关"
                     if score < SEARCH_MIN_EVIDENCE_SCORE
                     else "引用来源摘要、章节路径或正文与查询相关"
                 ),

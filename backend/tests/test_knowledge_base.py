@@ -45,11 +45,13 @@ from app.knowledge.service import (
     KnowledgeService,
     _build_evidence_pack,
     _build_section_nodes,
+    _chunk_text_related_groups,
     _document_card_for_route,
     _expand_related_chunks,
     _route_candidates,
     _score_documents,
     _score_text,
+    _select_diverse_chunk_hits,
     validate_discovered_skill,
 )
 from app.llm import LLMClient
@@ -138,8 +140,15 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
         chunks = db.exec(select(KnowledgeChunk).where(KnowledgeChunk.document_id == job.document_id)).all()
         assert chunks
         assert all(chunk.metadata_json.get("section_path") for chunk in chunks)
-        assert all(chunk.metadata_json.get("related_group_id") for chunk in chunks)
-        assert all(chunk.id in chunk.metadata_json.get("related_chunk_ids", []) for chunk in chunks)
+        assert all(chunk.metadata_json.get("ingest_schema_version") == 2 for chunk in chunks)
+        for chunk in chunks:
+            metadata = chunk.metadata_json or {}
+            if metadata.get("related_group_id"):
+                assert chunk.id in metadata.get("related_chunk_ids", [])
+                assert metadata.get("related_chunk_count", 0) > 1
+            else:
+                assert metadata.get("related_chunk_ids") == []
+                assert metadata.get("related_chunk_count") == 0
         response = service.search(
             KnowledgeSearchRequest(
                 tenant_id="tenant_demo",
@@ -208,6 +217,56 @@ def test_related_chunk_expansion_is_bounded_around_hit() -> None:
     assert [chunk.chunk_index for chunk in expanded] == sorted(
         chunk.chunk_index for chunk in expanded
     )
+
+
+def test_related_groups_only_link_parts_from_one_oversized_paragraph() -> None:
+    groups = _chunk_text_related_groups(
+        "# 流程标题\n\n第一条独立说明。\n\n第二条独立说明。\n\n" + ("连续正文。" * 300),
+        300,
+    )
+
+    assert all("流程标题" not in part for group in groups for part in group)
+    assert len(groups[0]) == 1
+    assert len(groups[-1]) > 1
+    assert sum("第一条独立说明" in part for group in groups for part in group) == 1
+
+
+def test_diverse_chunk_hits_cover_selected_buckets_before_filling() -> None:
+    buckets = [
+        KnowledgeBucket(
+            id=f"bucket_{index}",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_demo",
+            bucket_key=f"bucket_{index}",
+            title=f"主题 {index}",
+            summary="",
+        )
+        for index in range(3)
+    ]
+    ranked = [
+        KnowledgeChunk(
+            id=chunk_id,
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_demo",
+            bucket_id=bucket_id,
+            chunk_index=index,
+            content=chunk_id,
+        )
+        for index, (chunk_id, bucket_id) in enumerate(
+            [
+                ("chunk_a1", "bucket_0"),
+                ("chunk_a2", "bucket_0"),
+                ("chunk_b1", "bucket_1"),
+                ("chunk_c1", "bucket_2"),
+            ]
+        )
+    ]
+
+    selected = _select_diverse_chunk_hits(ranked, buckets, 4)
+
+    assert {chunk.bucket_id for chunk in selected} == {"bucket_0", "bucket_1", "bucket_2"}
 
 
 def test_docx_headings_are_preserved_and_numbered_body_items_are_not_sections() -> None:
