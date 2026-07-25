@@ -23,8 +23,9 @@ from app.agents.branching import (
     visible_skill,
     visible_tool_rows,
 )
-from app.core.conversation_context import build_conversation_context
+from app.channels.service_outbox import stage_channel_delivery
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
+from app.core.conversation_context import build_conversation_context
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
     FALLBACK_REPLY,
@@ -54,11 +55,11 @@ from app.db.models import (
 )
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
-from app.channels.service_outbox import stage_channel_delivery
 from app.knowledge import KnowledgeService
 from app.knowledge.citations import (
     compact_knowledge_citation_labels,
     knowledge_citations_from_results,
+    restore_truncated_atomic_references,
 )
 from app.knowledge.schema import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.llm import LLMClient, LLMError
@@ -66,10 +67,10 @@ from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
 )
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
-from app.observability.spans import llm_operation
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
 from app.observability import EventLog
+from app.observability.spans import llm_operation
 from app.session.attachments import (
     message_content_with_attachment_context,
     message_images_from_metadata,
@@ -85,7 +86,6 @@ from app.session.session_schema import (
 )
 from app.tools import ToolExecutor
 from app.tools.tool_schema import ToolCall, ToolError, ToolResult
-
 
 StatusCallback = Callable[[str, dict[str, object]], None]
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
@@ -564,7 +564,7 @@ class AgentLoop:
 
         if not chat_session:
             chat_session = self._get_or_create_session(request)
-        self._finalize_turn(
+        reply = self._finalize_turn(
             chat_session,
             request.tenant_id,
             reply,
@@ -683,7 +683,7 @@ class AgentLoop:
                 else self._conversation_context(chat_session)
             ),
         )
-        self._finalize_turn(
+        reply = self._finalize_turn(
             chat_session,
             request.tenant_id,
             reply,
@@ -1010,12 +1010,20 @@ class AgentLoop:
                 self._pace_stream()
         if is_cancelled and is_cancelled():
             return
+        repaired_reply = self._restore_reply_atomic_references(reply, step_result)
+        if repaired_reply != reply:
+            reply = repaired_reply
+            yield self._stream_event(
+                "stream_replace",
+                chat_session,
+                self._turn_payload({"content": reply}, user_message_id),
+            )
         yield self._stream_event(
             "stream_end", chat_session, self._turn_payload({}, user_message_id)
         )
         if is_cancelled and is_cancelled():
             return
-        self._finalize_turn(
+        reply = self._finalize_turn(
             chat_session,
             request.tenant_id,
             reply,
@@ -1466,11 +1474,11 @@ class AgentLoop:
             final_reply: str,
             final_step_result: StepAgentResult | None = None,
             final_source_message: str | None = None,
-        ) -> None:
+        ) -> str:
             nonlocal turn_finalized
             if turn_finalized:
-                return
-            self._finalize_turn(
+                return final_reply
+            finalized_reply = self._finalize_turn(
                 target_session,
                 request.tenant_id,
                 final_reply,
@@ -1479,6 +1487,7 @@ class AgentLoop:
                 user_message_id=user_message_id,
             )
             turn_finalized = True
+            return finalized_reply
 
         def recover_chat_session_after_exception() -> ChatSession:
             nonlocal chat_session
@@ -2148,6 +2157,14 @@ class AgentLoop:
                 )
             if mark_current_turn_cancelled():
                 return
+            repaired_reply = self._restore_reply_atomic_references(reply, step_result)
+            if repaired_reply != reply:
+                reply = repaired_reply
+                yield self._stream_event(
+                    "stream_replace",
+                    chat_session,
+                    self._turn_payload({"content": reply}, user_message_id),
+                )
             yield self._stream_event(
                 "stream_end", chat_session, self._turn_payload({}, user_message_id)
             )
@@ -2192,7 +2209,7 @@ class AgentLoop:
                 chat_session = self._get_or_create_session(request)
             if mark_current_turn_cancelled():
                 return
-            finalize_turn_once(chat_session, reply, step_result, request.message)
+            reply = finalize_turn_once(chat_session, reply, step_result, request.message)
             self.db.commit()
             turn_commit_completed = True
             self.db.refresh(chat_session)
@@ -7017,7 +7034,7 @@ class AgentLoop:
             "error_occurred",
             {"code": code, "message": message},
         )
-        self._finalize_turn(chat_session, chat_session.tenant_id, reply)
+        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply)
         self.db.commit()
         self.db.refresh(chat_session)
         return ChatTurnResponse(
@@ -7034,11 +7051,14 @@ class AgentLoop:
         step_result: StepAgentResult | None = None,
         source_message: str | None = None,
         user_message_id: str | None = None,
-    ) -> None:
+    ) -> str:
         chat_session.updated_at = utc_now()
         if chat_session.status != "handoff":
             chat_session.status = "active"
         metadata = self._assistant_message_metadata(step_result, chat_session, source_message)
+        reply = restore_truncated_atomic_references(
+            reply, metadata.get("knowledge_citations")
+        )
         reply = self._normalize_reply_citation_labels(reply, metadata.get("knowledge_citations"))
         reply = self._strip_trailing_citation_summary(reply)
         reply, compacted_citations = compact_knowledge_citation_labels(
@@ -7090,6 +7110,18 @@ class AgentLoop:
             "session_state_changed",
             public_session(chat_session).model_dump(),
         )
+        return reply
+
+    def _restore_reply_atomic_references(
+        self,
+        reply: str,
+        step_result: StepAgentResult | None,
+    ) -> str:
+        knowledge_results = list(step_result.knowledge_results or []) if step_result else []
+        citations = self._dedupe_knowledge_citations(
+            knowledge_citations_from_results(knowledge_results)
+        )
+        return restore_truncated_atomic_references(reply, citations)
 
     def _mark_session_running(self, chat_session: ChatSession) -> None:
         if chat_session.status == "handoff":

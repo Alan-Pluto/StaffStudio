@@ -4,8 +4,8 @@ from app.core.context_projection import (
     compact_knowledge_context,
     compact_memory_context,
     compact_pending_tasks,
-    compact_step_skill_context,
     compact_step_result,
+    compact_step_skill_context,
 )
 
 
@@ -91,6 +91,17 @@ def test_compact_knowledge_context_keeps_complete_related_group() -> None:
     assert len(knowledge) == 1
     assert "第 1 段内容" in knowledge[0]["content"]
     assert "第 8 段内容" in knowledge[0]["content"]
+
+
+def test_compact_knowledge_context_does_not_split_email_at_limit() -> None:
+    content = f"{'x' * 790} ops@example.test 后续说明"
+    compacted = compact_knowledge_context(
+        [{"evidence_pack": [{"content": content, "source_path": "guide.md"}]}]
+    )
+
+    projected = compacted[0]["retrieved_knowledge"][0]["content"]
+    assert "ops@example.test" in projected
+    assert "ops@example..." not in projected
 
 
 def test_compact_conversation_context_keeps_recent_history_within_control_budget() -> None:

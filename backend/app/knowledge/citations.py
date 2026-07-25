@@ -6,6 +6,15 @@ from typing import Any
 CITATION_EXCERPT_CHAR_LIMIT = 6000
 CITATION_SUMMARY_CHAR_LIMIT = 800
 CONCEPT_EXCERPT_CHAR_LIMIT = 2400
+EMAIL_PATTERN = re.compile(
+    r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+(?![\w.-])",
+    re.IGNORECASE,
+)
+TRUNCATED_EMAIL_PATTERN = re.compile(
+    r"(?P<prefix>[A-Z0-9._%+-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)*)"
+    r"(?P<ellipsis>\.{3}|…)",
+    re.IGNORECASE,
+)
 
 
 def compact_knowledge_citation_labels(
@@ -46,6 +55,30 @@ def compact_knowledge_citation_labels(
         for old_label in ordered_labels
     ]
     return compacted_content, compacted_citations
+
+
+def restore_truncated_atomic_references(content: str, citations: object) -> str:
+    """Restore a uniquely identifiable email that the model abbreviated."""
+    if not content or not isinstance(citations, list):
+        return content
+    evidence_text = "\n".join(
+        str(citation.get(field) or "")
+        for citation in citations
+        if isinstance(citation, dict)
+        for field in ("content", "excerpt", "summary", "source_path")
+    )
+    evidence_emails = {match.group(0) for match in EMAIL_PATTERN.finditer(evidence_text)}
+    if not evidence_emails:
+        return content
+
+    def replace(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        candidates = {
+            email for email in evidence_emails if email.lower().startswith(prefix.lower())
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else match.group(0)
+
+    return TRUNCATED_EMAIL_PATTERN.sub(replace, content)
 
 
 def _compact(value: str, limit: int) -> str:

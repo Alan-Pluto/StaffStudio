@@ -1133,6 +1133,37 @@ def test_finalize_turn_keeps_only_inline_knowledge_citations() -> None:
     assert [item["label"] for item in message.metadata_json["knowledge_citations"]] == ["[1]"]
 
 
+def test_finalize_turn_restores_unique_truncated_email_in_response_and_message() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.db = FakeDb()
+    loop.events = FakeEvents()
+    session = ChatSession(id="session_test", tenant_id="tenant_demo")
+    step_result = StepAgentResult(
+        knowledge_results=[
+            {
+                "evidence_pack": [
+                    {
+                        "source_path": "employee-guide.md / contact / evidence 1",
+                        "excerpt": "材料准备完成后发送至 ops@example.test。",
+                    }
+                ]
+            }
+        ]
+    )
+
+    reply = loop._finalize_turn(
+        session,
+        "tenant_demo",
+        "请将材料发送至 ops@example... [1]",
+        step_result=step_result,
+    )
+
+    message = loop.db.added[-1]
+    assert reply == "请将材料发送至 ops@example.test [1]"
+    assert isinstance(message, Message)
+    assert message.content == reply
+
+
 def test_merge_queued_reply_preserves_each_structured_execution_segment() -> None:
     loop = object.__new__(AgentLoop)
     refund_then_purchase = (

@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.conversation_context import build_conversation_context
+from app.knowledge.citations import EMAIL_PATTERN
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY
-
 
 CONTROL_CONTEXT_TOKEN_BUDGET = 32_000
 KNOWLEDGE_HISTORY_LIMIT = 1
@@ -441,7 +441,15 @@ def _short_text(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + "..."
+    boundary = limit
+    token_start = text.rfind(" ", 0, limit) + 1
+    token_end = text.find(" ", limit)
+    if token_end < 0:
+        token_end = len(text)
+    boundary_token = text[token_start:token_end].strip("，。；：、,;:()（）[]【】<>")
+    if EMAIL_PATTERN.fullmatch(boundary_token):
+        boundary = token_end
+    return text[:boundary].rstrip() + "..."
 
 
 def _optional_text(value: object) -> str | None:

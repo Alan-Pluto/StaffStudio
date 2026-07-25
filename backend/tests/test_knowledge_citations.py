@@ -2,6 +2,7 @@ from app.knowledge.citations import (
     CITATION_EXCERPT_CHAR_LIMIT,
     compact_knowledge_citation_labels,
     knowledge_citations_from_results,
+    restore_truncated_atomic_references,
 )
 
 
@@ -34,6 +35,33 @@ def test_compact_knowledge_citation_labels_supports_historical_filtered_metadata
 
     assert content == "排查步骤来自手册。[1] 区域故障需要报修。[2]"
     assert [item["label"] for item in citations] == ["[1]", "[2]"]
+
+
+def test_restore_truncated_email_from_unique_cited_evidence() -> None:
+    reply = "请将材料发送至 ops@example... [1]"
+    citations = [
+        {
+            "label": "[1]",
+            "source_path": "employee-guide.md",
+            "excerpt": "材料准备完成后发送至 ops@example.test。",
+        }
+    ]
+
+    assert restore_truncated_atomic_references(reply, citations) == (
+        "请将材料发送至 ops@example.test [1]"
+    )
+
+
+def test_restore_truncated_email_keeps_ambiguous_prefix_unchanged() -> None:
+    reply = "联系 ops@example... [1]"
+    citations = [
+        {
+            "label": "[1]",
+            "excerpt": "可联系 ops@example.test 或 ops@example.team。",
+        }
+    ]
+
+    assert restore_truncated_atomic_references(reply, citations) == reply
 
 
 def test_knowledge_citations_prefer_wiki_concepts_over_evidence_pack() -> None:
