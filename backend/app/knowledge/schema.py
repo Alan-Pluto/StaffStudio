@@ -190,6 +190,9 @@ class KnowledgeSearchRequest(BaseModel):
     tenant_id: str
     agent_id: Optional[str] = None
     query: str
+    query_type: Literal["answer", "policy_check", "tool_discovery", "skill_discovery"] = "answer"
+    desired_evidence: Optional[str] = None
+    scope: dict[str, Any] = Field(default_factory=dict)
     model_config_id: Optional[str] = None
     mode: Literal["chat", "skill_discovery", "debug"] = "chat"
     knowledge_base_ids: list[str] = Field(default_factory=list)

@@ -121,6 +121,18 @@ AGENT_PERSONA_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
 ExecutionFinalizeState = Literal["continued", "completed", "handoff"]
 
 
+def _knowledge_scope_ids(
+    scope: dict[str, Any],
+    plural_key: str,
+    singular_key: str,
+) -> list[str]:
+    values = scope.get(plural_key)
+    if not isinstance(values, list):
+        singular = scope.get(singular_key)
+        values = [singular] if singular else []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
 def _agent_identity_prompt(agent: AgentProfile) -> str:
     metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
     lines = [
@@ -3997,7 +4009,8 @@ class AgentLoop:
                 memory_context,
                 conversation_context,
             )
-        runtime_forced = bool((query.scope or {}).pop("_runtime_forced", False))
+        query_scope = dict(query.scope or {})
+        runtime_forced = bool(query_scope.pop("_runtime_forced", False))
         payload = {
             "phase": "knowledge",
             "text": "正在检索知识",
@@ -4016,6 +4029,13 @@ class AgentLoop:
                 request.tenant_id,
                 chat_session.agent_id,
             )
+            scoped_knowledge_base_ids = _knowledge_scope_ids(
+                query_scope, "knowledge_base_ids", "knowledge_base_id"
+            )
+            if scoped_knowledge_base_ids:
+                knowledge_base_ids = [
+                    item for item in knowledge_base_ids if item in scoped_knowledge_base_ids
+                ]
             if (
                 self._agent_requires_resource_filter(request.tenant_id, chat_session.agent_id)
                 and not knowledge_base_ids
@@ -4039,8 +4059,19 @@ class AgentLoop:
                         tenant_id=request.tenant_id,
                         agent_id=chat_session.agent_id,
                         query=search_query,
+                        query_type=query.query_type,
+                        desired_evidence=query.desired_evidence,
+                        scope=query_scope,
                         mode="chat",
                         knowledge_base_ids=knowledge_base_ids,
+                        knowledge_base_version_ids=_knowledge_scope_ids(
+                            query_scope,
+                            "knowledge_base_version_ids",
+                            "knowledge_base_version_id",
+                        ),
+                        document_ids=_knowledge_scope_ids(
+                            query_scope, "document_ids", "document_id"
+                        ),
                         max_chunks=max(1, min(query.max_chunks, 12)),
                         max_buckets=4,
                         max_depth=max(1, min(query.max_depth, 4)),
@@ -4213,6 +4244,15 @@ class AgentLoop:
         model_config: ModelConfig | None = None,
     ) -> dict[str, Any] | None:
         knowledge_base_ids = self._agent_visible_knowledge_base_ids(tenant_id, agent_id)
+        query_scope = dict((query.scope if query else {}) or {})
+        query_scope.pop("_runtime_forced", None)
+        scoped_knowledge_base_ids = _knowledge_scope_ids(
+            query_scope, "knowledge_base_ids", "knowledge_base_id"
+        )
+        if scoped_knowledge_base_ids:
+            knowledge_base_ids = [
+                item for item in knowledge_base_ids if item in scoped_knowledge_base_ids
+            ]
         if self._agent_requires_resource_filter(tenant_id, agent_id) and not knowledge_base_ids:
             return None
         knowledge_query = query or KnowledgeQuery(
@@ -4226,8 +4266,19 @@ class AgentLoop:
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 query=knowledge_query.query.strip() or message,
+                query_type=knowledge_query.query_type,
+                desired_evidence=knowledge_query.desired_evidence,
+                scope=query_scope,
                 mode="chat",
                 knowledge_base_ids=knowledge_base_ids,
+                knowledge_base_version_ids=_knowledge_scope_ids(
+                    query_scope,
+                    "knowledge_base_version_ids",
+                    "knowledge_base_version_id",
+                ),
+                document_ids=_knowledge_scope_ids(
+                    query_scope, "document_ids", "document_id"
+                ),
                 max_chunks=8,
                 max_buckets=4,
                 max_depth=3,
