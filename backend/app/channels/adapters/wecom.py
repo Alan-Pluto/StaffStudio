@@ -7,7 +7,9 @@ import threading
 import time
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlalchemy import update
+from sqlalchemy.pool import NullPool
+from sqlmodel import Session, create_engine, select
 
 from app.channels.adapters.base import (
     ChannelInbound,
@@ -108,6 +110,7 @@ class WeComStreamManager:
         reconcile_seconds: float = RECONCILE_SECONDS,
     ):
         self._engine = db_engine or engine
+        self._intake_engine = self._short_timeout_engine(self._engine)
         self._client_factory = client_factory or _default_client_factory
         self._reconcile_seconds = reconcile_seconds
         self._streams: dict[str, _StreamState] = {}
@@ -115,6 +118,18 @@ class WeComStreamManager:
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._reconcile_thread: threading.Thread | None = None
+
+    @staticmethod
+    def _short_timeout_engine(db_engine):
+        """Use a separate short-timeout SQLite pool so inbox writes cannot stall heartbeats."""
+        url = db_engine.url
+        if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
+            return db_engine
+        return create_engine(
+            str(url),
+            connect_args={"check_same_thread": False, "timeout": 0.25},
+            poolclass=NullPool,
+        )
 
     def start(self) -> None:
         if self._reconcile_thread and self._reconcile_thread.is_alive():
@@ -355,16 +370,20 @@ class WeComStreamManager:
     ) -> None:
         try:
             with Session(self._engine) as db:
-                binding = db.get(ChannelBinding, binding_id)
-                if not binding:
-                    return
-                if config_revision is not None and binding.config_revision != config_revision:
-                    return
-                if binding.connected != connected:
-                    binding.connected = connected
-                    binding.updated_at = utc_now()
-                    db.add(binding)
+                statement = update(ChannelBinding).where(
+                    ChannelBinding.id == binding_id,
+                    ChannelBinding.channel == "wecom",
+                )
+                if config_revision is not None:
+                    statement = statement.where(ChannelBinding.config_revision == config_revision)
+                if connected:
+                    statement = statement.where(ChannelBinding.status == "active")
+                statement = statement.where(ChannelBinding.connected != connected)
+                result = db.exec(statement.values(connected=connected, updated_at=utc_now()))
+                if result.rowcount == 1:
                     db.commit()
+                else:
+                    db.rollback()
         except Exception:
             logger.exception("企微连接状态落库失败 binding=%s", binding_id)
 
@@ -384,7 +403,8 @@ class WeComStreamManager:
             )
 
         def on_frame(frame, *_args) -> None:
-            # WS loop 线程只做归一化+入队,立即返回继续心跳;AgentLoop 轮在 worker 线程执行
+            # SDK callback returns only after the durable inbox commit. The queue only wakes
+            # the local worker; startup polling recovers the row if the process exits here.
             with state.callback_condition:
                 if state.stop.is_set():
                     return
@@ -393,9 +413,42 @@ class WeComStreamManager:
                 inbound = normalize_wecom_frame(frame, account_scope=account_scope)
                 if inbound is None:
                     return
-                state.queue.put_nowait((state.config_revision, inbound))
+                from app.channels.service_durable_inbox import StageDisposition
+                from app.channels.service_wecom_inbox import stage_wecom_inbound
+
+                delay = 0.05
+                while True:
+                    result = stage_wecom_inbound(
+                        db_engine=self._intake_engine,
+                        binding_id=binding_id,
+                        expected_revision=state.config_revision,
+                        account_scope=account_scope,
+                        inbound=inbound,
+                    )
+                    if result.disposition is not StageDisposition.NACK:
+                        break
+                    if self._stopped.is_set():
+                        logger.error(
+                            "企微服务停机时 inbox 仍不可写，终止当前回调 binding=%s event=%s",
+                            binding_id,
+                            inbound.event_id,
+                        )
+                        return
+                    # The pinned SDK swallows listener exceptions and has no callback NACK.
+                    # Keep the frame in this callback and apply backpressure until durable.
+                    logger.warning(
+                        "企微 inbox 暂不可写，保留当前消息并重试 binding=%s event=%s error=%s",
+                        binding_id,
+                        inbound.event_id,
+                        result.error_code,
+                    )
+                    time.sleep(delay)
+                    delay = min(delay * 2, 1.0)
+                if result.disposition is StageDisposition.STAGED and result.event_pk:
+                    state.queue.put_nowait(result.event_pk)
             except Exception:
                 logger.exception("企微入站消息入队失败 binding=%s", binding_id)
+                raise
             finally:
                 with state.callback_condition:
                     state.callbacks_inflight -= 1
@@ -407,27 +460,14 @@ class WeComStreamManager:
 
     def _run_worker(self, binding_id: str, state: _StreamState) -> None:
         """单 worker 串行消费本绑定入站消息(与同会话串行锁语义一致)。"""
-        from app.channels.service_intake import process_inbound
+        from app.channels.service_intake import process_staged_inbound
 
         while True:
             item = state.queue.get()
             if item is None:
                 return
-            if isinstance(item, tuple) and len(item) == 2:
-                item_revision, inbound = item
-            else:
-                item_revision, inbound = state.config_revision, item
             try:
-                with Session(self._engine) as db:
-                    binding = db.get(ChannelBinding, binding_id)
-                    if (
-                        not binding
-                        or binding.status != "active"
-                        or binding.config_revision != item_revision
-                    ):
-                        continue
-                    db.expunge(binding)
-                process_inbound(binding, inbound, db_engine=self._engine)
+                process_staged_inbound(item, db_engine=self._intake_engine)
             except Exception:
                 logger.exception("企微入站消息处理失败 binding=%s", binding_id)
 
@@ -487,7 +527,14 @@ class WeComAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wecom_frame(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
         chat_id = str(target.get("to_user_id") or "").strip()
         if not chat_id:
             raise ValueError("企微投递目标缺少 to_user_id(chatid)")

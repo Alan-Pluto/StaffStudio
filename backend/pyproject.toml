@@ -8,6 +8,7 @@ dependencies = [
   "cryptography>=42.0.0",
   "fastapi>=0.111.0",
   "greenlet>=3.0.3",
+  "lark-channel-sdk==1.2.0",
   "httpx>=0.27.0",
   "openai>=1.40.0",
   "beautifulsoup4>=4.12.3",
@@ -40,7 +41,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["desktop_launcher", "single_port_app"]
+py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app"]
 
 [tool.setuptools.packages.find]
 include = ["app*", "mock_servers*"]

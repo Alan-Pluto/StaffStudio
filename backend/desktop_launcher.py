@@ -608,5 +608,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def run_frozen_safe_main() -> int:
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_frozen_safe_main())

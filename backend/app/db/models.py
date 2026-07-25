@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, Integer, JSON, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -551,6 +551,8 @@ class ChannelBinding(SQLModel, table=True):
     external_account_key: Optional[str] = Field(default=None, unique=True, index=True)
     # 身份作用域稳定键:企微为 corp_id,微信为空字符串
     identity_scope_key: Optional[str] = Field(default=None, index=True)
+    # provider 回调声明的租户边界；飞书首次可信事件中 CAS 固定 tenant_key
+    provider_tenant_key: Optional[str] = Field(default=None, index=True)
     # 每次凭证/账号配置成功提交后递增,用于 ingress 代际隔离
     config_revision: int = Field(
         default=0,
@@ -642,6 +644,12 @@ class ChannelInboundEvent(SQLModel, table=True):
     __tablename__ = "channel_inbound_events"
     __table_args__ = (
         UniqueConstraint("binding_id", "event_id", name="uq_channel_inbound_event_binding"),
+        Index(
+            "ix_channel_inbound_events_binding_status_created",
+            "binding_id",
+            "status",
+            "created_at",
+        ),
     )
 
     id: str = Field(default_factory=lambda: new_id("chevt"), primary_key=True)
@@ -650,6 +658,18 @@ class ChannelInboundEvent(SQLModel, table=True):
     channel: str = Field(index=True)
     event_id: str
     payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 入站时的绑定配置代次，仅用于 ingress 代际审计；已落库事件不因后续轮换失效
+    config_revision: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    # 每条事件不可变的回复目标；异步处理不得读取会话上的可变 target
+    target_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, server_default="{}"),
+    )
+    # 飞书收到确认 reaction 的远端 ID；最终回复送达后据此异步删除
+    reaction_id: Optional[str] = Field(default=None, index=True)
     # received/processing/done/failed
     status: str = Field(default="received", index=True)
     # 创建/接管该事件的进程启动代次；当前代次仍在运行时禁止按墙钟误接管。
@@ -680,6 +700,8 @@ class ChannelDelivery(SQLModel, table=True):
     last_error: Optional[str] = None
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)
+    # 第一次真正尝试远端发送的时间，用于飞书 UUID 一小时去重窗口
+    first_attempt_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

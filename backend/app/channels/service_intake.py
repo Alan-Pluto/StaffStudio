@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +52,12 @@ _DEDUP_LOOKBACK = 50
 _processor_run_pid: int | None = None
 _processor_run_id: str | None = None
 _processor_run_guard = threading.Lock()
+_staged_inbound_thread: threading.Thread | None = None
+_staged_inbound_stop = threading.Event()
+_staged_inbound_wake = threading.Event()
+_binding_intake_condition = threading.Condition()
+_binding_intake_active: dict[str, int] = {}
+_binding_intake_paused: set[str] = set()
 
 
 def current_processor_run_id() -> str:
@@ -86,6 +93,64 @@ def _claim_stale_event(db: Session, event_id: str) -> bool:
     )
     db.commit()
     return result.rowcount == 1
+
+
+def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
+    """Atomically claim one durable received event for this processor generation."""
+    use_engine = db_engine or engine
+    with Session(use_engine) as db:
+        result = db.exec(
+            update(ChannelInboundEvent)
+            .where(
+                ChannelInboundEvent.id == event_id,
+                ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                ChannelInboundEvent.status == "received",
+            )
+            .values(
+                status="processing",
+                processor_run_id=current_processor_run_id(),
+                updated_at=utc_now(),
+            )
+        )
+        db.commit()
+        return result.rowcount == 1
+
+
+def pause_binding_intake(binding_id: str, timeout_seconds: float = 5.0) -> bool:
+    """Fence new durable work and wait for an already-running turn to leave."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    with _binding_intake_condition:
+        _binding_intake_paused.add(binding_id)
+        while _binding_intake_active.get(binding_id, 0):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _binding_intake_condition.wait(timeout=remaining)
+        return True
+
+
+def resume_binding_intake(binding_id: str) -> None:
+    with _binding_intake_condition:
+        _binding_intake_paused.discard(binding_id)
+        _binding_intake_condition.notify_all()
+
+
+def _enter_binding_intake(binding_id: str) -> bool:
+    with _binding_intake_condition:
+        if binding_id in _binding_intake_paused:
+            return False
+        _binding_intake_active[binding_id] = _binding_intake_active.get(binding_id, 0) + 1
+        return True
+
+
+def _leave_binding_intake(binding_id: str) -> None:
+    with _binding_intake_condition:
+        remaining = _binding_intake_active.get(binding_id, 0) - 1
+        if remaining > 0:
+            _binding_intake_active[binding_id] = remaining
+        else:
+            _binding_intake_active.pop(binding_id, None)
+        _binding_intake_condition.notify_all()
 
 
 def _release_stale_event_claim(db_engine, event_id: str) -> None:
@@ -237,7 +302,7 @@ def _turn_reply_exists(db: Session, binding: ChannelBinding, user_message: Messa
 
 def _stage_error_notice(db: Session, binding: ChannelBinding, chat_session: ChatSession) -> None:
     target = dict(chat_session.channel_target_json or {})
-    if not target.get("to_user_id") or not target.get("context_token"):
+    if not _valid_notice_target(binding.channel, target):
         return
     db.add(
         ChannelDelivery(
@@ -290,22 +355,60 @@ def _stage_notice(
     external_conv_id: str,
     target: dict,
     text: str,
+    *,
+    final_for_event: bool = False,
 ) -> None:
     """系统提示投递(指令回复/员工下线提示);session_id 用 conv: 前缀占位。"""
-    if not target.get("to_user_id") or not target.get("context_token"):
+    if not _valid_notice_target(binding.channel, target):
         return
+    delivery_target = dict(target)
+    if final_for_event:
+        delivery_target["reaction_final"] = True
     db.add(
         ChannelDelivery(
             tenant_id=binding.tenant_id,
             binding_id=binding.id,
             session_id=f"conv:{external_conv_id}",
             message_id=None,
-            target_json=dict(target),
+            target_json=delivery_target,
             kind="notice",
             text=text,
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=new_id("chnotice"),
+        )
+    )
+
+
+def _valid_notice_target(channel: str, target: dict) -> bool:
+    if channel == "feishu":
+        return bool(target.get("message_id") or target.get("receive_id"))
+    return bool(target.get("to_user_id") and target.get("context_token"))
+
+
+def _stage_feishu_received_reaction(
+    db: Session,
+    binding: ChannelBinding,
+    event: ChannelInboundEvent,
+) -> None:
+    idempotency_key = f"feishu-reaction-add:{binding.id}:{event.event_id}"
+    existing = db.exec(
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == idempotency_key)
+    ).first()
+    if existing:
+        return
+    db.add(
+        ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=f"event:{event.id}",
+            message_id=None,
+            target_json={"message_id": event.event_id, "event_pk": event.id},
+            kind="reaction_add",
+            text="Get",
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=idempotency_key,
         )
     )
 
@@ -512,7 +615,13 @@ def _normalize_compat(binding: ChannelBinding, raw: dict) -> ChannelInbound | No
     return adapter.normalize(raw)
 
 
-def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_engine=None) -> bool:
+def process_inbound(
+    binding: ChannelBinding,
+    msg: dict | ChannelInbound,
+    *,
+    db_engine=None,
+    staged_event_pk: str | None = None,
+) -> bool:
     """处理一条渠道入站消息：幂等登记 → 身份/会话锚定 → 串行执行对话轮。
 
     在 ingress 线程内同步调用；返回是否真正执行了对话轮。
@@ -534,86 +643,100 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
     }
 
     with Session(use_engine) as db:
-        event = ChannelInboundEvent(
-            tenant_id=binding.tenant_id,
-            binding_id=binding.id,
-            channel=binding.channel,
-            event_id=inbound.event_id,
-            payload_json=inbound.raw,
-            status="processing",
-            processor_run_id=current_processor_run_id(),
-        )
-        db.add(event)
-        try:
-            db.commit()
-        except IntegrityError:
-            # (binding_id, event_id) 唯一冲突:默认已处理跳过
-            db.rollback()
-            stale = db.exec(
-                select(ChannelInboundEvent).where(
-                    ChannelInboundEvent.binding_id == binding.id,
-                    ChannelInboundEvent.event_id == inbound.event_id,
-                )
-            ).first()
+        event = db.get(ChannelInboundEvent, staged_event_pk) if staged_event_pk else None
+        if staged_event_pk:
             if (
-                stale
-                and stale.status == "processing"
-                and _claim_stale_event(db, stale.id)
+                not event
+                or event.binding_id != binding.id
+                or event.event_id != inbound.event_id
+                or event.status != "processing"
+                or event.processor_run_id != current_processor_run_id()
             ):
-                claimed_id = stale.id
-                try:
-                    stale = db.get(ChannelInboundEvent, claimed_id)
-                    turn_message = _find_turn_user_message_in_conv(
-                        db, binding, inbound.external_conv_id, inbound.event_id
+                return False
+            target = dict(event.target_json or {})
+        else:
+            event = ChannelInboundEvent(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                channel=binding.channel,
+                event_id=inbound.event_id,
+                payload_json=inbound.raw,
+                config_revision=binding.config_revision,
+                target_json=target,
+                status="processing",
+                processor_run_id=current_processor_run_id(),
+            )
+            db.add(event)
+            try:
+                db.commit()
+            except IntegrityError:
+            # (binding_id, event_id) 唯一冲突:默认已处理跳过
+                db.rollback()
+                stale = db.exec(
+                    select(ChannelInboundEvent).where(
+                        ChannelInboundEvent.binding_id == binding.id,
+                        ChannelInboundEvent.event_id == inbound.event_id,
                     )
-                    if not turn_message:
-                        # 消息未落库(崩溃在登记后):删除旧行接管重跑
-                        logger.warning(
-                            "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
-                            binding.id,
-                            inbound.event_id,
-                            stale.status,
-                            stale.updated_at,
+                ).first()
+                if (
+                    stale
+                    and stale.status == "processing"
+                    and _claim_stale_event(db, stale.id)
+                ):
+                    claimed_id = stale.id
+                    try:
+                        stale = db.get(ChannelInboundEvent, claimed_id)
+                        turn_message = _find_turn_user_message_in_conv(
+                            db, binding, inbound.external_conv_id, inbound.event_id
                         )
-                        db.delete(stale)
-                        db.commit()
-                        return process_inbound(binding, inbound, db_engine=db_engine)
-                    if not _turn_reply_exists(db, binding, turn_message):
+                        if not turn_message:
+                        # 消息未落库(崩溃在登记后):删除旧行接管重跑
+                            logger.warning(
+                                "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
+                                binding.id,
+                                inbound.event_id,
+                                stale.status,
+                                stale.updated_at,
+                            )
+                            db.delete(stale)
+                            db.commit()
+                            return process_inbound(binding, inbound, db_engine=db_engine)
+                        if not _turn_reply_exists(db, binding, turn_message):
                         # 消息已落库但 turn 未完成:不重跑(避免工具副作用重复),
                         # 标 failed + 向该会话发中断通知
-                        logger.warning(
-                            "入站事件 turn 未完成(崩溃窗口),标记失败 binding=%s event=%s",
+                            logger.warning(
+                                "入站事件 turn 未完成(崩溃窗口),标记失败 binding=%s event=%s",
+                                binding.id,
+                                inbound.event_id,
+                            )
+                            stale.status = "failed"
+                            stale.error = "process_exit_incomplete_turn"
+                            stale.updated_at = utc_now()
+                            db.add(stale)
+                            _stage_interrupted_notice(
+                                db,
+                                binding,
+                                turn_message.session_id,
+                                target,
+                                inbound.event_id,
+                            )
+                            db.commit()
+                        else:
+                            stale.status = "done"
+                            stale.error = None
+                            stale.processed_at = utc_now()
+                            stale.updated_at = utc_now()
+                            db.add(stale)
+                            db.commit()
+                    except Exception:
+                        db.rollback()
+                        _release_stale_event_claim_by_key(
+                            use_engine,
                             binding.id,
                             inbound.event_id,
                         )
-                        stale.status = "failed"
-                        stale.error = "process_exit_incomplete_turn"
-                        stale.updated_at = utc_now()
-                        db.add(stale)
-                        _stage_interrupted_notice(
-                            db,
-                            binding,
-                            turn_message.session_id,
-                            target,
-                            inbound.event_id,
-                        )
-                        db.commit()
-                    else:
-                        stale.status = "done"
-                        stale.error = None
-                        stale.processed_at = utc_now()
-                        stale.updated_at = utc_now()
-                        db.add(stale)
-                        db.commit()
-                except Exception:
-                    db.rollback()
-                    _release_stale_event_claim_by_key(
-                        use_engine,
-                        binding.id,
-                        inbound.event_id,
-                    )
-                    raise
-            return False
+                        raise
+                return False
 
         # 指令拦截:早于身份解析与会话创建,指令消息不进 AgentLoop
         if command:
@@ -621,7 +744,14 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
                 reply = _run_bind_command(db, binding, inbound, command)
             else:
                 reply = run_command(db, binding, inbound.external_conv_id, command)
-            _stage_notice(db, binding, inbound.external_conv_id, target, reply)
+            _stage_notice(
+                db,
+                binding,
+                inbound.external_conv_id,
+                target,
+                reply,
+                final_for_event=True,
+            )
             event.status = "done"
             event.processed_at = utc_now()
             event.updated_at = utc_now()
@@ -723,6 +853,11 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
                 AgentLoop(db).handle_turn(request)
             except Exception as exc:
                 logger.exception("渠道入站处理失败 binding=%s event=%s", binding.id, inbound.event_id)
+                db.rollback()
+                event = db.get(ChannelInboundEvent, event_id)
+                chat_session = db.get(ChatSession, session_id)
+                if not event or not chat_session:
+                    return False
                 event.status = "failed"
                 event.error = str(exc)[:500]
                 event.updated_at = utc_now()
@@ -738,6 +873,264 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
             db.add(event)
             db.commit()
             return True
+
+
+def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
+    """Claim and process a durable inbox row without re-registering the event."""
+    use_engine = db_engine or engine
+    with Session(use_engine) as db:
+        staged = db.get(ChannelInboundEvent, event_pk)
+        binding_id = staged.binding_id if staged else None
+    if not binding_id or not _enter_binding_intake(binding_id):
+        return False
+    try:
+        if not claim_staged_inbound(event_pk, db_engine=use_engine):
+            return False
+        return _process_claimed_staged_inbound(event_pk, db_engine=use_engine)
+    except Exception:
+        with Session(use_engine) as db:
+            db.exec(
+                update(ChannelInboundEvent)
+                .where(
+                    ChannelInboundEvent.id == event_pk,
+                    ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                    ChannelInboundEvent.status == "processing",
+                    ChannelInboundEvent.processor_run_id == current_processor_run_id(),
+                )
+                .values(
+                    status="received",
+                    processor_run_id=None,
+                    updated_at=utc_now(),
+                )
+            )
+            db.commit()
+        raise
+    finally:
+        _leave_binding_intake(binding_id)
+
+
+def _process_claimed_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
+    use_engine = db_engine or engine
+    with Session(use_engine) as db:
+        event = db.get(ChannelInboundEvent, event_pk)
+        binding = db.get(ChannelBinding, event.binding_id) if event else None
+        if not event or not binding:
+            if event:
+                event.status = "failed"
+                event.error = "binding_not_found"
+                event.updated_at = utc_now()
+                db.add(event)
+                db.commit()
+            return False
+        try:
+            inbound = _decode_and_validate_staged_event(event, binding)
+        except ValueError as exc:
+            event.status = "failed"
+            event.error = str(exc)[:500]
+            event.updated_at = utc_now()
+            db.add(event)
+            db.commit()
+            return False
+        if event.channel == "feishu":
+            _stage_feishu_received_reaction(db, binding, event)
+        db.commit()
+        db.refresh(binding)
+        db.expunge(binding)
+    try:
+        return process_inbound(
+            binding,
+            inbound,
+            db_engine=use_engine,
+            staged_event_pk=event_pk,
+        )
+    except Exception:
+        with Session(use_engine) as db:
+            event = db.get(ChannelInboundEvent, event_pk)
+            if event and event.status == "processing":
+                turn_message = _find_turn_user_message_in_conv(
+                    db, binding, inbound.external_conv_id, inbound.event_id
+                )
+                if not turn_message:
+                    event.status = "received"
+                    event.processor_run_id = None
+                elif _turn_reply_exists(db, binding, turn_message):
+                    event.status = "done"
+                    event.error = None
+                    event.processed_at = utc_now()
+                else:
+                    event.status = "failed"
+                    event.error = "process_exit_incomplete_turn"
+                    _stage_interrupted_notice(
+                        db,
+                        binding,
+                        turn_message.session_id,
+                        dict(event.target_json or {}),
+                        inbound.event_id,
+                    )
+                event.updated_at = utc_now()
+                db.add(event)
+                db.commit()
+        raise
+
+
+def wake_staged_inbound_worker() -> None:
+    _staged_inbound_wake.set()
+
+
+def run_staged_inbound_daemon(
+    *,
+    once: bool = False,
+    poll_seconds: float = 1.0,
+    db_engine=None,
+) -> None:
+    use_engine = db_engine or engine
+    while True:
+        try:
+            with Session(use_engine) as db:
+                event_ids = db.exec(
+                    select(ChannelInboundEvent.id)
+                    .where(
+                        ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                        ChannelInboundEvent.status == "received",
+                    )
+                    .order_by(ChannelInboundEvent.created_at)
+                    .limit(20)
+                ).all()
+            for event_id in event_ids:
+                process_staged_inbound(event_id, db_engine=use_engine)
+        except Exception:
+            logger.exception("durable 入站事件轮询失败")
+        if once or _staged_inbound_stop.is_set():
+            return
+        _staged_inbound_wake.wait(max(0.2, poll_seconds))
+        _staged_inbound_wake.clear()
+
+
+def start_staged_inbound_daemon(*, db_engine=None) -> None:
+    global _staged_inbound_thread
+    if _staged_inbound_thread and _staged_inbound_thread.is_alive():
+        return
+    _staged_inbound_stop.clear()
+    _staged_inbound_wake.clear()
+    _staged_inbound_thread = threading.Thread(
+        target=run_staged_inbound_daemon,
+        kwargs={"db_engine": db_engine},
+        name="staffdeck-channel-durable-intake",
+        daemon=True,
+    )
+    _staged_inbound_thread.start()
+
+
+def stop_staged_inbound_daemon(timeout_seconds: float = 5.0) -> bool:
+    global _staged_inbound_thread
+    _staged_inbound_stop.set()
+    _staged_inbound_wake.set()
+    thread = _staged_inbound_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=max(0.0, timeout_seconds))
+    stopped = not (thread and thread.is_alive())
+    if stopped:
+        _staged_inbound_thread = None
+    return stopped
+
+
+def _decode_and_validate_staged_event(
+    event: ChannelInboundEvent,
+    binding: ChannelBinding,
+) -> ChannelInbound:
+    payload = event.payload_json or {}
+    account = payload.get("account") if isinstance(payload, dict) else None
+    if event.tenant_id != binding.tenant_id or event.channel != binding.channel:
+        raise ValueError("replay_account_mismatch")
+    if event.channel == "feishu":
+        from app.channels.service_feishu_inbox import (
+            decode_replay_envelope,
+            feishu_account_key,
+            feishu_identity_scope,
+        )
+
+        inbound = decode_replay_envelope(payload)
+        app_id = str((account or {}).get("app_id") or "").strip()
+        tenant_key = str((account or {}).get("tenant_key") or "").strip()
+        if (
+            not app_id
+            or not tenant_key
+            or binding.external_account_key != feishu_account_key(app_id)
+            or binding.provider_tenant_key != tenant_key
+            or binding.identity_scope_key != feishu_identity_scope(app_id, tenant_key)
+        ):
+            raise ValueError("replay_account_mismatch")
+        return inbound
+    if event.channel == "wecom":
+        from app.channels.service_wecom_inbox import decode_wecom_replay_envelope
+
+        inbound = decode_wecom_replay_envelope(payload)
+        scope = str((account or {}).get("scope") or "").strip()
+        if not scope or external_account_scope(None, binding) != scope:
+            raise ValueError("replay_account_mismatch")
+        return inbound
+    raise ValueError("unsupported_envelope_channel")
+
+
+def _recover_stale_durable_event(event_pk: str, *, db_engine=None) -> bool:
+    use_engine = db_engine or engine
+    run_id = current_processor_run_id()
+    with Session(use_engine) as db:
+        event = db.get(ChannelInboundEvent, event_pk)
+        binding = db.get(ChannelBinding, event.binding_id) if event else None
+        if not event or not binding or event.status != "processing":
+            return False
+        try:
+            inbound = _decode_and_validate_staged_event(event, binding)
+        except ValueError as exc:
+            event.status = "failed"
+            event.error = str(exc)[:500]
+            event.updated_at = utc_now()
+            db.add(event)
+            db.commit()
+            return False
+        turn_message = _find_turn_user_message_in_conv(
+            db, binding, inbound.external_conv_id, inbound.event_id
+        )
+        if turn_message:
+            if not _claim_stale_event(db, event_pk):
+                return False
+            event = db.get(ChannelInboundEvent, event_pk)
+            if _turn_reply_exists(db, binding, turn_message):
+                event.status = "done"
+                event.error = None
+                event.processed_at = utc_now()
+            else:
+                event.status = "failed"
+                event.error = "process_exit_incomplete_turn"
+                _stage_interrupted_notice(
+                    db,
+                    binding,
+                    turn_message.session_id,
+                    dict(event.target_json or {}),
+                    inbound.event_id,
+                )
+            event.updated_at = utc_now()
+            db.add(event)
+            db.commit()
+            return False
+        released = db.exec(
+            update(ChannelInboundEvent)
+            .where(
+                ChannelInboundEvent.id == event_pk,
+                ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                ChannelInboundEvent.status == "processing",
+                or_(
+                    ChannelInboundEvent.processor_run_id.is_(None),
+                    ChannelInboundEvent.processor_run_id != run_id,
+                ),
+            )
+            .values(status="received", processor_run_id=None, updated_at=utc_now())
+        )
+        db.commit()
+        if released.rowcount != 1:
+            return False
+    return process_staged_inbound(event_pk, db_engine=use_engine)
 
 
 def sweep_stale_inbound_events(*, db_engine=None) -> int:
@@ -758,15 +1151,25 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
                 ),
             )
         ).all()
-        candidates = [(row.binding_id, row.event_id, row.payload_json) for row in stale_rows]
-    for binding_id, event_id, payload in candidates:
+        candidates = [
+            (row.id, row.binding_id, row.channel, row.event_id, row.payload_json)
+            for row in stale_rows
+        ]
+    for event_pk, binding_id, channel, event_id, payload in candidates:
         with Session(use_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
-            if not binding or binding.status != "active":
+            if not binding:
+                continue
+            if channel not in {"feishu", "wecom"} and binding.status != "active":
                 continue
             db.expunge(binding)
         try:
-            if process_inbound(binding, payload or {}, db_engine=use_engine):
+            if channel in {"feishu", "wecom"}:
+                if _recover_stale_durable_event(event_pk, db_engine=use_engine):
+                    taken += 1
+                continue
+            inbound_payload = payload or {}
+            if process_inbound(binding, inbound_payload, db_engine=use_engine):
                 taken += 1
         except Exception:
             logger.exception("陈旧入站事件接管失败 binding=%s event=%s", binding_id, event_id)

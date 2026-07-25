@@ -16,9 +16,11 @@ from app.channels.adapters.wecom import (
     is_self_frame,
     normalize_wecom_frame,
 )
+from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
+from app.channels.service_durable_inbox import StageDisposition, StageResult
 from app.channels.service_identity import channel_username
 from app.channels.service_intake import process_inbound
-from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
+from app.channels.service_wecom_inbox import stage_wecom_inbound
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
@@ -144,6 +146,187 @@ def test_event_id_falls_back_to_req_id() -> None:
     frame = _text_frame(msgid=None, headers={"req_id": "req_fallback"})
     inbound = normalize_wecom_frame(frame)
     assert inbound is not None and inbound.event_id == "req_fallback"
+
+
+def test_wecom_callback_commits_inbox_before_return() -> None:
+    from app.channels.adapters.wecom import _StreamState
+
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(
+        engine,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
+    manager = WeComStreamManager(db_engine=engine)
+    state = _StreamState()
+    state.config_revision = 0
+    client = FakeWSClient()
+    manager._wire_client(binding_id, client, state, "corpA")
+
+    client.emit_local("message", _text_frame(msgid="msg_durable"))
+
+    with Session(engine) as db:
+        event = db.exec(
+            select(ChannelInboundEvent).where(ChannelInboundEvent.event_id == "msg_durable")
+        ).one()
+        assert event.status == "received"
+        assert event.target_json["to_user_id"] == "zhangsan"
+    assert state.queue.get_nowait() == event.id
+
+
+def test_wecom_callback_retries_inside_real_sdk_dispatch(monkeypatch) -> None:
+    from aibot import MessageHandler
+
+    import app.channels.service_wecom_inbox as inbox
+    from app.channels.adapters.wecom import _StreamState
+
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    manager = WeComStreamManager(db_engine=engine)
+    state = _StreamState()
+    state.config_revision = 0
+    client = FakeWSClient()
+    manager._wire_client(binding_id, client, state, "aib_bot1")
+    original_stage = inbox.stage_wecom_inbound
+    attempts = {"count": 0}
+
+    def flaky_stage(**kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return StageResult(StageDisposition.NACK, error_code="inbox_database_error")
+        return original_stage(**kwargs)
+
+    monkeypatch.setattr(inbox, "stage_wecom_inbound", flaky_stage)
+
+    class Logger:
+        def warn(self, *_args):
+            return None
+
+        def error(self, *_args):
+            return None
+
+        def debug(self, *_args):
+            return None
+
+    MessageHandler(Logger()).handle_frame(
+        _text_frame(msgid="msg_retry"),
+        SimpleNamespace(emit=client.emit_local),
+    )
+
+    assert attempts["count"] == 2
+    event_pk = state.queue.get_nowait()
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_pk).event_id == "msg_retry"
+
+
+def test_wecom_inbox_retry_yields_to_global_shutdown(monkeypatch) -> None:
+    import app.channels.service_wecom_inbox as inbox
+    from app.channels.adapters.wecom import _StreamState
+
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    manager = WeComStreamManager(db_engine=engine)
+    state = _StreamState()
+    state.config_revision = 0
+    client = FakeWSClient()
+    manager._wire_client(binding_id, client, state, "aib_bot1")
+    monkeypatch.setattr(
+        inbox,
+        "stage_wecom_inbound",
+        lambda **kwargs: StageResult(StageDisposition.NACK, error_code="db_down"),
+    )
+    manager._stopped.set()
+
+    client.emit_local("message", _text_frame(msgid="msg_shutdown"))
+
+    assert state.queue.empty()
+
+
+def test_wecom_durable_event_survives_secret_rotation() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(
+        engine,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_before_rotation"), account_scope="corpA")
+    staged = stage_wecom_inbound(
+        db_engine=engine,
+        binding_id=binding_id,
+        expected_revision=0,
+        account_scope="corpA",
+        inbound=inbound,
+    )
+    assert staged.disposition is StageDisposition.STAGED
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.credentials_enc = encrypt_channel_secret("rotated")
+        binding.config_revision = 1
+        db.add(binding)
+        db.commit()
+
+    assert intake_module.process_staged_inbound(staged.event_pk, db_engine=engine) is True
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, staged.event_pk).status == "done"
+
+
+def test_wecom_stale_processing_event_is_recovered() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(
+        engine,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_stale"), account_scope="corpA")
+    staged = stage_wecom_inbound(
+        db_engine=engine,
+        binding_id=binding_id,
+        expected_revision=0,
+        account_scope="corpA",
+        inbound=inbound,
+    )
+    assert intake_module.claim_staged_inbound(staged.event_pk, db_engine=engine) is True
+    with Session(engine) as db:
+        event = db.get(ChannelInboundEvent, staged.event_pk)
+        event.processor_run_id = "dead-process"
+        db.add(event)
+        db.commit()
+
+    assert intake_module.sweep_stale_inbound_events(db_engine=engine) == 1
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, staged.event_pk).status == "done"
+
+
+def test_wecom_stale_processing_event_recovers_after_binding_disabled() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(
+        engine,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_stale_disabled"), account_scope="corpA")
+    staged = stage_wecom_inbound(
+        db_engine=engine,
+        binding_id=binding_id,
+        expected_revision=0,
+        account_scope="corpA",
+        inbound=inbound,
+    )
+    assert intake_module.claim_staged_inbound(staged.event_pk, db_engine=engine) is True
+    with Session(engine) as db:
+        event = db.get(ChannelInboundEvent, staged.event_pk)
+        event.processor_run_id = "dead-process"
+        binding = db.get(ChannelBinding, binding_id)
+        binding.status = "disabled"
+        db.add(event)
+        db.add(binding)
+        db.commit()
+
+    assert intake_module.sweep_stale_inbound_events(db_engine=engine) == 1
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, staged.event_pk).status == "done"
 
 
 # ---------- send ----------
@@ -292,7 +475,7 @@ def test_stream_manager_dispatches_inbound_to_intake(monkeypatch) -> None:
     binding_id = _seed_wecom_binding(engine)
     processed: list = []
 
-    def fake_process_inbound(binding, inbound, *, db_engine=None):
+    def fake_process_inbound(binding, inbound, *, db_engine=None, staged_event_pk=None):
         processed.append(inbound)
         return True
 
@@ -313,7 +496,7 @@ def test_frame_handler_returns_immediately_without_blocking(monkeypatch) -> None
     binding_id = _seed_wecom_binding(engine)
     processed: list = []
 
-    def slow_process_inbound(binding, inbound, *, db_engine=None):
+    def slow_process_inbound(binding, inbound, *, db_engine=None, staged_event_pk=None):
         time.sleep(1.0)
         processed.append(inbound)
         return True
@@ -340,7 +523,7 @@ def test_inbound_messages_are_processed_in_order(monkeypatch) -> None:
     processed: list[str] = []
     first_started = threading.Event()
 
-    def ordered_process_inbound(binding, inbound, *, db_engine=None):
+    def ordered_process_inbound(binding, inbound, *, db_engine=None, staged_event_pk=None):
         if inbound.event_id == "msg_first":
             first_started.set()
             time.sleep(0.3)
@@ -413,6 +596,13 @@ def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) ->
     from app.channels.adapters.wecom import _StreamState
 
     engine = _test_engine()
+    binding_id = _seed_wecom_binding(
+        engine,
+        id="chan_callback",
+        config_revision=3,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
     manager = WeComStreamManager(db_engine=engine)
     state = _StreamState()
     state.config_revision = 3
@@ -420,7 +610,7 @@ def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) ->
     callback_entered = threading.Event()
     release_callback = threading.Event()
     wait_finished = threading.Event()
-    inbound = object()
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_callback"), account_scope="corpA")
 
     def blocking_normalize(frame, account_scope=""):
         callback_entered.set()
@@ -428,9 +618,9 @@ def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) ->
         return inbound
 
     monkeypatch.setattr(wecom_module, "normalize_wecom_frame", blocking_normalize)
-    manager._wire_client("chan_callback", client, state, "corpA")
+    manager._wire_client(binding_id, client, state, "corpA")
     with manager._lock:
-        manager._streams["chan_callback"] = state
+        manager._streams[binding_id] = state
 
     callback_thread = threading.Thread(
         target=client.emit_local,
@@ -438,11 +628,11 @@ def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) ->
     )
     callback_thread.start()
     assert callback_entered.wait(timeout=5.0)
-    manager.stop_binding("chan_callback")
+    manager.stop_binding(binding_id)
 
     wait_thread = threading.Thread(
         target=lambda: (
-            manager.wait_binding_stopped("chan_callback", timeout_seconds=5.0),
+            manager.wait_binding_stopped(binding_id, timeout_seconds=5.0),
             wait_finished.set(),
         )
     )
@@ -454,9 +644,11 @@ def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) ->
 
     assert not callback_thread.is_alive()
     assert not wait_thread.is_alive()
-    queued_revision, queued_inbound = state.queue.get_nowait()
-    assert queued_revision == 3
-    assert queued_inbound is inbound
+    queued_event_pk = state.queue.get_nowait()
+    with Session(engine) as db:
+        queued_event = db.get(ChannelInboundEvent, queued_event_pk)
+        assert queued_event is not None
+        assert queued_event.event_id == inbound.event_id
     assert state.queue.get_nowait() is None
 
 
@@ -469,7 +661,7 @@ def test_stream_finally_waits_for_external_callback_and_worker_consumes_it(monke
     release_callback = threading.Event()
     processed = threading.Event()
     callback_threads: list[threading.Thread] = []
-    inbound = SimpleNamespace(event_id="msg_external_callback")
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_external_callback"))
 
     class ExternalCallbackClient(FakeWSClient):
         async def connect(self):
@@ -487,8 +679,8 @@ def test_stream_finally_waits_for_external_callback_and_worker_consumes_it(monke
         assert release_callback.wait(timeout=5.0)
         return inbound
 
-    def record_process(binding, item, db_engine=None):
-        assert item is inbound
+    def record_process(binding, item, db_engine=None, staged_event_pk=None):
+        assert item.event_id == inbound.event_id
         processed.set()
         return True
 
@@ -937,8 +1129,8 @@ def test_wecom_credentials_change_restarts_stream_with_new_client() -> None:
 
 
 def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     engine = _test_engine()
     users = _seed_api_users(engine)
@@ -979,8 +1171,8 @@ def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
 
 
 def test_wecom_credentials_rejects_bot_change_without_stopping_ingress(monkeypatch) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     engine = _test_engine()
     users = _seed_api_users(engine)
@@ -1021,8 +1213,8 @@ def test_wecom_credentials_rejects_bot_change_without_stopping_ingress(monkeypat
 
 
 def test_wecom_reconfigure_timeout_keeps_old_config_and_does_not_start(monkeypatch) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     engine = _test_engine()
     users = _seed_api_users(engine)
@@ -1072,8 +1264,8 @@ def test_wecom_reconfigure_timeout_keeps_old_config_and_does_not_start(monkeypat
 
 
 def test_wecom_reconfigure_commit_failure_restores_old_ingress(monkeypatch) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     engine = _test_engine()
     users = _seed_api_users(engine)
@@ -1162,7 +1354,7 @@ def test_wecom_timeout_then_reconcile_restores_old_config_once(monkeypatch) -> N
         created.append((bot_id, secret, client))
         return client
 
-    def blocking_process(binding, inbound, db_engine=None):
+    def blocking_process(binding, inbound, db_engine=None, staged_event_pk=None):
         turn_started.set()
         assert release_turn.wait(timeout=5.0)
         return True
@@ -1211,8 +1403,8 @@ def test_stale_wecom_callback_cannot_overwrite_new_revision_connected_state() ->
 def test_concurrent_wecom_secret_rotations_serialize_and_match_running_config(
     monkeypatch, tmp_path
 ) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     db_path = tmp_path / "wecom-reconfigure.db"
     engine = create_engine(
@@ -1280,8 +1472,8 @@ def test_concurrent_wecom_secret_rotations_serialize_and_match_running_config(
 
 
 def test_delete_serializes_against_concurrent_credentials_update(monkeypatch, tmp_path) -> None:
-    import app.channels
     import app.api.channels as channels_api
+    import app.channels
 
     db_path = tmp_path / "delete-race.db"
     engine = create_engine(
@@ -1351,3 +1543,63 @@ def test_delete_serializes_against_concurrent_credentials_update(monkeypatch, tm
     assert starts == [False]
     with Session(engine) as db:
         assert db.get(ChannelBinding, binding_id) is None
+
+
+def test_delete_rejects_while_durable_turn_is_running(monkeypatch) -> None:
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        identity_scope_key="corpA",
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+    )
+    inbound = normalize_wecom_frame(_text_frame(msgid="msg_delete_barrier"), account_scope="corpA")
+    staged = stage_wecom_inbound(
+        db_engine=engine,
+        binding_id=binding_id,
+        expected_revision=0,
+        account_scope="corpA",
+        inbound=inbound,
+    )
+    turn_started = threading.Event()
+    release_turn = threading.Event()
+
+    class BlockingAgentLoop:
+        def __init__(self, db):
+            self.db = db
+
+        def handle_turn(self, request):
+            turn_started.set()
+            assert release_turn.wait(timeout=5.0)
+            self.db.commit()
+
+    monkeypatch.setattr(agent_loop_module, "AgentLoop", BlockingAgentLoop)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+    monkeypatch.setattr(channels_api, "INGRESS_QUIESCE_TIMEOUT_SECONDS", 0.05)
+    processing = threading.Thread(
+        target=intake_module.process_staged_inbound,
+        args=(staged.event_pk,),
+        kwargs={"db_engine": engine},
+    )
+    processing.start()
+    assert turn_started.wait(timeout=5.0)
+
+    client = _make_api_client(engine)
+    blocked = client.delete(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert blocked.status_code == 409
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id) is not None
+
+    release_turn.set()
+    processing.join(timeout=5.0)
+    assert not processing.is_alive()
+    deleted = client.delete(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert deleted.status_code == 204

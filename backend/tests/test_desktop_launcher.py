@@ -1,6 +1,17 @@
 import desktop_launcher
 
 
+def test_frozen_safe_main_calls_freeze_support_before_main(monkeypatch) -> None:
+    import multiprocessing
+
+    calls: list[str] = []
+    monkeypatch.setattr(multiprocessing, "freeze_support", lambda: calls.append("freeze"))
+    monkeypatch.setattr(desktop_launcher, "main", lambda: calls.append("main") or 7)
+
+    assert desktop_launcher.run_frozen_safe_main() == 7
+    assert calls == ["freeze", "main"]
+
+
 def _clear_port_env(monkeypatch) -> None:
     monkeypatch.delenv("ULTRARAG_PORT", raising=False)
     monkeypatch.delenv("ULTRARAG_PORT_RANGE_START", raising=False)

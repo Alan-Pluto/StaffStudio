@@ -60,6 +60,7 @@ _USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
 _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
+_FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
 
 
 def init_db() -> None:
@@ -98,6 +99,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_channel_scope_rebuild(conn, inspector, tables)
         _migrate_channel_bindings_multi(conn, inspector, tables)
         _migrate_channel_account_key_schema(conn, tables)
+        _migrate_feishu_channel_schema(conn, tables)
         _migrate_channel_inbound_run_schema(conn, tables)
         _migrate_channel_bind_code_constraints(conn, tables)
 
@@ -892,6 +894,95 @@ def _migrate_channel_inbound_run_schema(conn, tables: set[str]) -> None:
             "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_processor_run_id "
             "ON channel_inbound_events(processor_run_id)"
         )
+    )
+
+
+def _migrate_feishu_channel_schema(conn, tables: set[str]) -> None:
+    """Add the durable-inbox and provider-scope columns required by Feishu.
+
+    Column presence is authoritative rather than the marker alone so an interrupted
+    or manually modified database is repaired on the next startup.
+    """
+    required_tables = {
+        "channel_bindings",
+        "channel_inbound_events",
+        "channel_deliveries",
+    }
+    if not required_tables <= tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    binding_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(channel_bindings)"))
+    }
+    if "provider_tenant_key" not in binding_columns:
+        conn.execute(
+            text("ALTER TABLE channel_bindings ADD COLUMN provider_tenant_key VARCHAR")
+        )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_channel_bindings_provider_tenant_key "
+            "ON channel_bindings(provider_tenant_key)"
+        )
+    )
+
+    inbound_columns = {
+        str(row[1])
+        for row in conn.execute(text("PRAGMA table_info(channel_inbound_events)"))
+    }
+    if "config_revision" not in inbound_columns:
+        conn.execute(
+            text(
+                "ALTER TABLE channel_inbound_events ADD COLUMN config_revision "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+    if "target_json" not in inbound_columns:
+        conn.execute(
+            text(
+                "ALTER TABLE channel_inbound_events ADD COLUMN target_json "
+                "JSON NOT NULL DEFAULT '{}'"
+            )
+        )
+    if "reaction_id" not in inbound_columns:
+        conn.execute(
+            text("ALTER TABLE channel_inbound_events ADD COLUMN reaction_id VARCHAR")
+        )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_reaction_id "
+            "ON channel_inbound_events(reaction_id)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_binding_status_created "
+            "ON channel_inbound_events(binding_id, status, created_at)"
+        )
+    )
+
+    delivery_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(channel_deliveries)"))
+    }
+    if "first_attempt_at" not in delivery_columns:
+        conn.execute(
+            text("ALTER TABLE channel_deliveries ADD COLUMN first_attempt_at DATETIME")
+        )
+
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"
+        ),
+        {"id": _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID},
     )
 
 

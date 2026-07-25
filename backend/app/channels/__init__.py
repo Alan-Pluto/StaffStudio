@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # 进程级 ingress 管理器单例(懒创建,测试可替换)
 _wechat_poll_manager = None
 _wecom_stream_manager = None
+_feishu_process_manager = None
 _binding_lifecycle_locks: dict[str, threading.RLock] = {}
 _binding_lifecycle_locks_guard = threading.Lock()
 _connector_lock_file: IO[bytes] | None = None
@@ -36,8 +37,8 @@ def _acquire_connector_process_lock() -> bool:
 
     database_path = engine.url.database
     if engine.url.get_backend_name() != "sqlite" or not database_path or database_path == ":memory:":
-        logger.warning("非文件 SQLite 无法启用 connector 进程锁，必须由部署层保证单实例")
-        return True
+        logger.error("渠道服务要求文件 SQLite 进程锁；当前数据库不支持可靠的单实例 Outbox")
+        return False
     lock_path = Path(database_path).resolve().with_name(f"{Path(database_path).name}.connector.lock")
     handle = lock_path.open("a+b")
     try:
@@ -106,6 +107,15 @@ def get_wecom_stream_manager():
     return _wecom_stream_manager
 
 
+def get_feishu_process_manager():
+    global _feishu_process_manager
+    if _feishu_process_manager is None:
+        from app.channels.feishu_manager import FeishuProcessManager
+
+        _feishu_process_manager = FeishuProcessManager()
+    return _feishu_process_manager
+
+
 def channel_services_enabled() -> bool:
     # staffdeck_role 预留角色拆分：all=单体全量，connector=仅渠道连接器
     return get_settings().staffdeck_role in {"all", "connector"}
@@ -113,6 +123,7 @@ def channel_services_enabled() -> bool:
 
 def _ensure_adapters_registered() -> None:
     # 各适配器模块导入即自注册(模块级 register_channel_adapter)
+    import app.channels.adapters.feishu  # noqa: F401
     import app.channels.adapters.wechat  # noqa: F401
     import app.channels.adapters.wecom  # noqa: F401
 
@@ -141,6 +152,8 @@ def _ingress_manager(channel: str):
         return get_wechat_poll_manager()
     if channel == "wecom":
         return get_wecom_stream_manager()
+    if channel == "feishu":
+        return get_feishu_process_manager()
     return None
 
 
@@ -183,6 +196,8 @@ def wait_binding_ingress_stopped(channel: str, binding_id: str, timeout_seconds:
         return get_wechat_poll_manager().wait_binding_stopped(binding_id, timeout_seconds)
     if channel == "wecom":
         return get_wecom_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
+    if channel == "feishu":
+        return get_feishu_process_manager().wait_binding_stopped(binding_id, timeout_seconds)
     return True
 
 
@@ -203,12 +218,17 @@ def start_channel_services() -> None:
         raise RuntimeError("检测到另一 connector 进程正在运行；每个数据库仅允许一个 connector")
     try:
         _ensure_adapters_registered()
-        from app.channels.service_intake import sweep_stale_inbound_events
+        from app.channels.service_intake import (
+            start_staged_inbound_daemon,
+            sweep_stale_inbound_events,
+        )
         from app.channels.service_outbox import start_delivery_daemon
 
         get_wechat_poll_manager().start()
         get_wecom_stream_manager().start()
+        get_feishu_process_manager().start()
         start_delivery_daemon()
+        start_staged_inbound_daemon()
         # 启动恢复:一次性清扫崩溃残留的 processing 入站事件(独立线程,不阻塞启动)
         _intake_sweep_thread = threading.Thread(
             target=sweep_stale_inbound_events,
@@ -223,7 +243,12 @@ def start_channel_services() -> None:
 
 def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
     deadline = time.monotonic() + max(0.0, timeout_seconds)
+    from app.channels.service_intake import stop_staged_inbound_daemon
     from app.channels.service_outbox import stop_delivery_daemon
+
+    intake_stopped = stop_staged_inbound_daemon(
+        timeout_seconds=max(0.0, deadline - time.monotonic())
+    )
 
     outbox_stopped = stop_delivery_daemon(
         timeout_seconds=max(0.0, deadline - time.monotonic())
@@ -236,11 +261,22 @@ def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
     wecom_stopped = stream_manager is None or stream_manager.stop(
         timeout_seconds=max(0.0, deadline - time.monotonic())
     )
+    feishu_manager = _feishu_process_manager
+    feishu_stopped = feishu_manager is None or feishu_manager.stop(
+        timeout_seconds=max(0.0, deadline - time.monotonic())
+    )
     sweep_thread = _intake_sweep_thread
     if sweep_thread and sweep_thread.is_alive():
         sweep_thread.join(timeout=max(0.0, deadline - time.monotonic()))
     sweep_stopped = not (sweep_thread and sweep_thread.is_alive())
-    stopped = outbox_stopped and wechat_stopped and wecom_stopped and sweep_stopped
+    stopped = (
+        intake_stopped
+        and outbox_stopped
+        and wechat_stopped
+        and wecom_stopped
+        and feishu_stopped
+        and sweep_stopped
+    )
     if stopped:
         _release_connector_process_lock()
     else:
