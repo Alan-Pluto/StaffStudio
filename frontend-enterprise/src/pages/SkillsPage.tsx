@@ -468,7 +468,12 @@ export default function SkillsPage({
   }
 
   function openCreate() {
-    navigate(`/enterprise/skills/distill?mode=create${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`);
+    const params = new URLSearchParams({
+      mode: 'create',
+      workspace_id: createDistillWorkspaceId(),
+    });
+    if (agentId) params.set('agent_id', agentId);
+    navigate(`/enterprise/skills/distill?${params.toString()}`);
   }
 
   function openEdit(row: SkillRead) {
@@ -871,6 +876,13 @@ export default function SkillsPage({
       />
     </div>
   );
+}
+
+function createDistillWorkspaceId(): string {
+  if (typeof window.crypto?.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function renderBranchBadge(row: SkillRead, isOverallAgent: boolean) {

@@ -485,12 +485,14 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const searchParams = searchParamsOverride || routerSearchParams;
   const skillId = searchParams.get('skill_id');
   const mode = searchParams.get('mode') || '';
+  const workspaceId = searchParams.get('workspace_id') || '';
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const activeAgentId = searchParams.get('agent_id') || selectedAgentId;
   const agentQuery = activeAgentId ? `&agent_id=${encodeURIComponent(activeAgentId)}` : '';
   const agentSearchParam = activeAgentId ? `agent_id=${encodeURIComponent(activeAgentId)}` : '';
   const agentOnlyQuery = agentSearchParam ? `?${agentSearchParam}` : '';
-  const cacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:${skillId || mode || 'new'}`;
+  const cacheIdentity = skillId || (mode === 'create' ? `create:${workspaceId || 'pending'}` : mode || 'new');
+  const cacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:${cacheIdentity}`;
   const [draft, setDraft] = useState<SkillCard | null>(null);
   const [loadedSkill, setLoadedSkill] = useState<SkillRead | null>(null);
   const [lastSavedDraft, setLastSavedDraft] = useState<SkillCard | null>(null);
@@ -553,8 +555,16 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   }, []);
 
   useEffect(() => {
+    if (!active || skillId || mode !== 'create' || workspaceId) return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('workspace_id', createDistillWorkspaceId());
+    navigate(`/enterprise/skills/distill?${nextParams.toString()}`, { replace: true });
+  }, [active, mode, navigate, searchParams, skillId, workspaceId]);
+
+  useEffect(() => {
     setCacheReady(false);
     setHydratedCacheKey('');
+    if (mode === 'create' && !workspaceId) return;
     const cached = readDistillCache(cacheKey);
     if (cached) {
       if (skillId && isBlankDistillWorkspace(cached)) {
@@ -638,7 +648,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         setHydratedCacheKey(cacheKey);
         setCacheReady(true);
       });
-  }, [agentQuery, cacheKey, skillId]);
+  }, [agentQuery, cacheKey, mode, skillId, workspaceId]);
 
   useEffect(() => {
     if (!cacheReady || hydratedCacheKey !== cacheKey) return;
@@ -1636,8 +1646,11 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     abortRef.current?.abort();
     Object.values(uploadControllersRef.current).forEach((controller) => controller.abort());
     uploadControllersRef.current = {};
-    const nextRoute = `/enterprise/skills/distill?mode=create${activeAgentId ? `&agent_id=${encodeURIComponent(activeAgentId)}` : ''}`;
-    const nextCacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:create`;
+    const nextWorkspaceId = createDistillWorkspaceId();
+    const nextParams = new URLSearchParams({ mode: 'create', workspace_id: nextWorkspaceId });
+    if (activeAgentId) nextParams.set('agent_id', activeAgentId);
+    const nextRoute = `/enterprise/skills/distill?${nextParams.toString()}`;
+    const nextCacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:create:${nextWorkspaceId}`;
     removeDistillCache(cacheKey);
     removeDistillCache(nextCacheKey);
     setCacheReady(false);
@@ -1660,7 +1673,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     setAttachments([]);
     setStreamStatus('');
     setActiveJob(null);
-    if (skillId) {
+    if (skillId || workspaceId !== nextWorkspaceId) {
       navigate(nextRoute, { replace: true });
     } else {
       setHydratedCacheKey(cacheKey);
@@ -5807,6 +5820,13 @@ function readDistillCache(key: string): DistillCacheSnapshot | null {
     window.sessionStorage.removeItem(key);
     return null;
   }
+}
+
+function createDistillWorkspaceId(): string {
+  if (typeof window.crypto?.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function writeDistillCache(key: string, snapshot: DistillCacheSnapshot): void {
