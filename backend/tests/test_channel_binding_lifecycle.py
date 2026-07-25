@@ -492,7 +492,9 @@ def test_delivery_does_not_fallback_when_original_binding_is_deleted() -> None:
 
         stage_channel_delivery(db, chat_session, message)
         db.commit()
-        assert db.exec(select(ChannelDelivery)).all() == []
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.status == "failed"
+        assert delivery.last_error == "binding_missing_or_inactive"
 
 
 def test_delivery_fallback_default_agent_still_works() -> None:
@@ -545,4 +547,6 @@ def test_delivery_gives_up_when_no_active_binding_matches() -> None:
 
         stage_channel_delivery(db, chat_session, message)
         db.commit()
-        assert db.exec(select(ChannelDelivery)).all() == []
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.status == "failed"
+        assert delivery.last_error == "binding_missing_or_inactive"

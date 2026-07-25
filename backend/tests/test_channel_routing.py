@@ -522,7 +522,9 @@ def test_staging_skips_when_binding_id_points_to_disabled() -> None:
 
         stage_channel_delivery(db, chat_session, message)
         db.commit()
-        assert db.exec(select(ChannelDelivery)).all() == []
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.status == "failed"
+        assert delivery.last_error == "binding_missing_or_inactive"
 
 
 # ---------- 迁移回填 ----------
