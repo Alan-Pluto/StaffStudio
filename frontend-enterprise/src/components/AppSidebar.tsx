@@ -114,6 +114,7 @@ export type AppSidebarChatProps = {
   sessionFilterOptions: ChatSessionFilterOption[];
   isSessionUnread: (session: ChatSession) => boolean;
   onOpenSession: (id: string) => void;
+  onNewConversation?: () => void;
   onOpenGallery: () => void;
   /** Highlights the 数字员工广场 entry as the active menu (chat gallery route). */
   galleryActive?: boolean;
@@ -962,6 +963,7 @@ function CollapsedChatSidebar({
   sessionFilterOptions,
   isSessionUnread,
   onOpenSession,
+  onNewConversation,
   onOpenGallery,
   galleryActive = false,
   handoffCount = 0,
@@ -970,7 +972,7 @@ function CollapsedChatSidebar({
   onToggle,
 }: Pick<
   AppSidebarChatProps,
-  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
+  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] py-[10px]">
@@ -1028,6 +1030,24 @@ function CollapsedChatSidebar({
           sessionFilterOptions={sessionFilterOptions}
           onSessionFilterChange={onSessionFilterChange}
         />
+
+        {onNewConversation && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onNewConversation}
+                aria-label="新建对话"
+                className="flex h-[32px] w-full items-center justify-center rounded-[8px] bg-[#18181a] text-white transition-colors hover:bg-[#303030]"
+              >
+                <IconAdd className="size-[16px]!" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" align="center">
+              新建对话
+            </TooltipContent>
+          </Tooltip>
+        )}
 
         <span className="text-[10px] leading-none text-[#464c5e]">会话</span>
 
@@ -1105,6 +1125,7 @@ function ChatSidebarVariant({
   sessionFilterOptions,
   isSessionUnread,
   onOpenSession,
+  onNewConversation,
   onOpenGallery,
   galleryActive = false,
   handoffCount = 0,
@@ -1130,6 +1151,7 @@ function ChatSidebarVariant({
           sessionFilterOptions={sessionFilterOptions}
           isSessionUnread={isSessionUnread}
           onOpenSession={onOpenSession}
+          onNewConversation={onNewConversation}
           onOpenGallery={onOpenGallery}
           galleryActive={galleryActive}
           handoffCount={handoffCount}
@@ -1182,6 +1204,16 @@ function ChatSidebarVariant({
               sessionFilterOptions={sessionFilterOptions}
               onSessionFilterChange={onSessionFilterChange}
             />
+            {onNewConversation && (
+              <button
+                type="button"
+                onClick={onNewConversation}
+                className="flex h-[40px] w-full items-center justify-center gap-[8px] rounded-[10px] bg-[#18181a] px-[16px] text-[14px] font-medium text-white transition-colors hover:bg-[#303030]"
+              >
+                <IconAdd className="size-[16px]! shrink-0" />
+                <span>新建对话</span>
+              </button>
+            )}
             <span className="text-[12px] leading-none text-[#858b9c]">员工会话</span>
           </div>
         </SidebarHeader>

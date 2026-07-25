@@ -40,6 +40,13 @@ export default function ChatPage() {
         sessionFilterOptions={chat.sessionFilterOptions}
         isSessionUnread={(session) => sessionHasUnreadReply(session, chat.sessionReadTimes, chat.sessionId)}
         onOpenSession={chat.openSession}
+        onNewConversation={() => {
+          const selectedAgent = chat.sessionAgentFilter === 'all'
+            ? chat.displayedAgent
+            : chat.agents.find((agent) => agent.id === chat.sessionAgentFilter);
+          if (selectedAgent) chat.openDraftForAgent(selectedAgent.id);
+          else chat.openGallery();
+        }}
         onOpenGallery={chat.openGallery}
         handoffCount={chat.handoffs.length}
         onOpenHandoffs={chat.openHandoffInbox}
