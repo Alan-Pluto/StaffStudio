@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 from datetime import timedelta
+from io import BytesIO
 
 import pytest
+from docx import Document
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -35,11 +37,19 @@ from app.db.models import (
 )
 from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.knowledge.okf import search_concepts
+from app.knowledge.parser import extract_text
 from app.knowledge.service import (
     IngestPayload,
     KnowledgeDiscoveryConflictError,
     KnowledgeDiscoveryValidationError,
     KnowledgeService,
+    _build_evidence_pack,
+    _build_section_nodes,
+    _document_card_for_route,
+    _expand_related_chunks,
+    _route_candidates,
+    _score_documents,
+    _score_text,
     validate_discovered_skill,
 )
 from app.llm import LLMClient
@@ -128,6 +138,8 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
         chunks = db.exec(select(KnowledgeChunk).where(KnowledgeChunk.document_id == job.document_id)).all()
         assert chunks
         assert all(chunk.metadata_json.get("section_path") for chunk in chunks)
+        assert all(chunk.metadata_json.get("related_group_id") for chunk in chunks)
+        assert all(chunk.id in chunk.metadata_json.get("related_chunk_ids", []) for chunk in chunks)
         response = service.search(
             KnowledgeSearchRequest(
                 tenant_id="tenant_demo",
@@ -149,6 +161,104 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
         assert response.evidence_pack[0]["excerpt"]
         assert response.chunks
         assert db.exec(select(KnowledgeDiscoverySuggestion)).all() == []
+
+
+def test_related_chunk_expansion_returns_all_siblings_in_source_order() -> None:
+    chunks = [
+        KnowledgeChunk(
+            id=f"chunk_{index}",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_demo",
+            bucket_id="bucket_demo",
+            chunk_index=index,
+            content=f"片段 {index}",
+            metadata_json={"related_group_id": "doc_demo:bucket_demo:section_1"},
+        )
+        for index in range(3)
+    ]
+
+    expanded = _expand_related_chunks([chunks[1]], [chunks[2], chunks[1], chunks[0]])
+
+    assert [chunk.id for chunk in expanded] == ["chunk_0", "chunk_1", "chunk_2"]
+    evidence = _build_evidence_pack("片段 1", expanded)
+    assert [item["chunk_id"] for item in evidence] == ["chunk_0", "chunk_1", "chunk_2"]
+
+
+def test_related_chunk_expansion_is_bounded_around_hit() -> None:
+    chunks = [
+        KnowledgeChunk(
+            id=f"chunk_{index}",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_demo",
+            bucket_id="bucket_demo",
+            chunk_index=index,
+            content=str(index) * 700,
+            metadata_json={"related_group_id": "large_group"},
+        )
+        for index in range(12)
+    ]
+
+    expanded = _expand_related_chunks([chunks[6]], chunks)
+
+    assert chunks[6] in expanded
+    assert len(expanded) <= 6
+    assert sum(len(chunk.content) for chunk in expanded) <= 4800
+    assert [chunk.chunk_index for chunk in expanded] == sorted(
+        chunk.chunk_index for chunk in expanded
+    )
+
+
+def test_docx_headings_are_preserved_and_numbered_body_items_are_not_sections() -> None:
+    document = Document()
+    document.add_heading("HR 模块", level=1)
+    document.add_heading("入离职办理", level=2)
+    document.add_paragraph("1. 准备材料甲")
+    document.add_paragraph("2. 提交登记表乙")
+    payload = BytesIO()
+    document.save(payload)
+
+    text, file_type = extract_text("hr.docx", payload.getvalue())
+    sections = _build_section_nodes(text)
+
+    assert file_type == "docx"
+    assert text.startswith("# HR 模块\n## 入离职办理")
+    assert [section["title"] for section in sections] == ["HR 模块", "入离职办理"]
+    assert "1. 准备材料甲" in sections[1]["content"]
+    assert "2. 提交登记表乙" in sections[1]["content"]
+
+
+def test_pdf_pages_receive_stable_section_labels(monkeypatch) -> None:
+    class FakePage:
+        def __init__(self, text: str):
+            self.text = text
+
+        def extract_text(self) -> str:
+            return self.text
+
+    class FakeReader:
+        pages = [FakePage("First page policy"), FakePage(""), FakePage("Third page process")]
+
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: FakeReader())
+
+    text, file_type = extract_text("policy.pdf", b"fake-pdf")
+    sections = _build_section_nodes(text)
+
+    assert file_type == "pdf"
+    assert text.startswith("# PDF 文档\n\n## 第 1 页")
+    assert [section["title"] for section in sections] == ["PDF 文档", "第 1 页", "第 3 页"]
+    assert sections[-1]["path"] == "PDF 文档 / 第 3 页"
+
+
+def test_long_section_continuations_share_one_related_section() -> None:
+    paragraphs = [f"{index}. 流程内容" + ("说明" * 150) for index in range(1, 9)]
+
+    sections = _build_section_nodes("# 办理流程\n\n" + "\n\n".join(paragraphs))
+
+    assert len(sections) > 1
+    assert {section["title"] for section in sections} == {"办理流程"}
+    assert len({section["related_section_id"] for section in sections}) == 1
 
 
 def test_knowledge_ingest_cancel_queued_job_clears_embedded_content() -> None:
@@ -428,6 +538,141 @@ def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monk
         assert all("fallback" not in str(item.get("phase") or "") for item in response.route_trace)
 
 
+def test_model_route_failure_falls_back_to_lexical_matching(monkeypatch) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_leave",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="leave.md",
+            file_type="md",
+            title="离职办理",
+            status="ready",
+            metadata_json={"document_card": {"title": "离职办理", "summary": "离职申请流程"}},
+        )
+        bucket = KnowledgeBucket(
+            id="kbucket_leave",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="leave",
+            title="离职申请流程",
+            summary="员工申请离职需要提交审批",
+        )
+        db.add(document)
+        db.add(bucket)
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                document_id=document.id,
+                bucket_id=bucket.id,
+                chunk_index=0,
+                content="员工申请离职后进入标准审批流程。",
+            )
+        )
+        db.commit()
+        monkeypatch.setattr(
+            KnowledgeService, "_select_documents_with_llm", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            KnowledgeService, "_select_buckets_with_llm", lambda *args, **kwargs: None
+        )
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="怎么申请离职",
+            ),
+            ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
+        )
+
+        phases = {item.get("phase") for item in response.route_trace}
+        assert response.chunks
+        assert "document_route_lexical_fallback" in phases
+        assert "bucket_route_lexical_fallback" in phases
+
+
+def test_document_loading_does_not_hide_relevant_rows_after_first_40() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        relevant = KnowledgeDocument(
+            id="kdoc_relevant_old",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="social-security.md",
+            file_type="md",
+            title="社保公积金办理",
+            status="ready",
+            metadata_json={"document_card": {"summary": "医保与社保办理规则"}},
+        )
+        db.add(relevant)
+        for index in range(145):
+            db.add(
+                KnowledgeDocument(
+                    id=f"kdoc_irrelevant_{index}",
+                    tenant_id="tenant_demo",
+                    knowledge_base_id="kb_demo",
+                    filename=f"other-{index}.md",
+                    file_type="md",
+                    title=f"其他资料 {index}",
+                    status="ready",
+                )
+            )
+        db.commit()
+
+        documents = KnowledgeService(db)._load_documents_for_search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="社保怎么办理",
+            )
+        )
+
+        assert len(documents) == 146
+        assert relevant.id in {document.id for document in documents}
+        route_documents = _route_candidates(
+            _score_documents("社保怎么办理", documents), documents, 120
+        )
+        assert relevant.id in {document.id for document in route_documents}
+
+
+def test_document_route_card_keeps_late_outline_entries() -> None:
+    document = KnowledgeDocument(
+        id="kdoc_hr",
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        filename="hr.md",
+        file_type="md",
+        title="HR FAQ",
+        status="ready",
+        metadata_json={
+            "document_card": {
+                "outline": [
+                    {"title": f"章节 {index}", "path": f"HR / 章节 {index}"}
+                    for index in range(1, 17)
+                ]
+            }
+        },
+    )
+
+    card = _document_card_for_route(document)
+
+    assert card["outline"][-1] == "HR / 章节 16"
+
+
+def test_query_scoring_reduces_generic_question_noise() -> None:
+    query = "怎么申请离职"
+
+    assert _score_text(query, "员工申请离职后进入标准审批流程") > _score_text(
+        query, "申请在职收入证明"
+    )
+
+
 def test_knowledge_search_records_persistent_substep_spans() -> None:
     events: list[tuple[str, dict]] = []
     with _test_session() as db:
@@ -503,6 +748,57 @@ def test_knowledge_search_records_persistent_substep_spans() -> None:
     assert finished["knowledge.search"]["duration_ms"] >= 0
     assert finished["knowledge.load_documents"]["candidate_count"] == 1
     assert finished["knowledge.build_evidence_pack"]["evidence_count"] == 1
+
+
+def test_legacy_knowledge_without_new_metadata_remains_searchable() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_legacy",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="legacy-policy.txt",
+            file_type="txt",
+            title="年假制度",
+            status="ready",
+            metadata_json={},
+        )
+        bucket = KnowledgeBucket(
+            id="kbucket_legacy",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="legacy",
+            title="年假制度",
+            summary="",
+            metadata_json={},
+        )
+        chunk = KnowledgeChunk(
+            id="kchunk_legacy",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_id=bucket.id,
+            chunk_index=0,
+            content="年假余额以系统中的有效记录为准。",
+            metadata_json={},
+        )
+        db.add(document)
+        db.add(bucket)
+        db.add(chunk)
+        db.commit()
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="年假",
+            )
+        )
+
+        assert [item.id for item in response.chunks] == ["kchunk_legacy"]
+        assert response.evidence_pack[0]["related_group_id"] is None
 
 
 def test_okf_search_does_not_require_manually_curated_business_terms() -> None:

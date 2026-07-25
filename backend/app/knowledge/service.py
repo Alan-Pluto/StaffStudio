@@ -60,8 +60,8 @@ SECTION_TARGET_CHARS = 1400
 EVIDENCE_CHUNK_CHARS = 900
 BUCKET_SECTION_CHARS = 6000
 PARAGRAPH_GROUP_CHARS = 4200
-SEARCH_DOCUMENT_LIMIT = 40
-SEARCH_BUCKET_LIMIT = 80
+SEARCH_DOCUMENT_ROUTE_LIMIT = 120
+SEARCH_BUCKET_ROUTE_LIMIT = 160
 TERMINAL_INGEST_STATUSES = {"succeeded", "failed", "cancelled"}
 CANCELLING_INGEST_STATUSES = {"cancel_requested", "cancelled"}
 CANCEL_REQUEST_STALE_AFTER = timedelta(seconds=15)
@@ -69,6 +69,22 @@ SEARCH_MIN_DOCUMENT_SCORE = 2.0
 SEARCH_MIN_BUCKET_SCORE = 2.0
 SEARCH_MIN_CHUNK_SCORE = 2.0
 SEARCH_MIN_EVIDENCE_SCORE = 2.0
+RELATED_CHUNK_MAX_COUNT = 6
+RELATED_CHUNK_MAX_CHARS = 4800
+KNOWLEDGE_INGEST_SCHEMA_VERSION = 2
+QUERY_NOISE_PHRASES = (
+    "我想知道",
+    "麻烦帮我",
+    "什么时候",
+    "告诉我",
+    "请问",
+    "怎么",
+    "如何",
+    "什么",
+    "哪些",
+    "哪个",
+    "一下",
+)
 
 INGEST_STAGES: list[dict[str, Any]] = [
     {"key": "queued", "label": "排队中", "progress": 0.0},
@@ -325,6 +341,7 @@ class KnowledgeService:
                 status="processing",
                 metadata_json={
                     **(metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}),
+                    "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
                     "char_count": len(normalized_text),
                     "document_card": document_card,
                     "section_tree": section_nodes,
@@ -527,9 +544,27 @@ class KnowledgeService:
         ) as span:
             selected_document_ids: list[str] = []
             if model_config:
-                selected_document_ids = self._select_documents_with_llm(
-                    query, documents, 5, model_config, route_trace
+                route_documents = _route_candidates(
+                    _score_documents(query, documents),
+                    documents,
+                    SEARCH_DOCUMENT_ROUTE_LIMIT,
                 )
+                llm_document_ids = self._select_documents_with_llm(
+                    query, route_documents, 5, model_config, route_trace
+                )
+                if llm_document_ids is None:
+                    selected_document_ids = [
+                        row.id for row in _score_documents(query, documents)[:5]
+                    ]
+                    route_trace.append(
+                        {
+                            "phase": "document_route_lexical_fallback",
+                            "message": "模型路由不可用，已按检索相关性选择知识文档",
+                            "selected_count": len(selected_document_ids),
+                        }
+                    )
+                else:
+                    selected_document_ids = llm_document_ids
             else:
                 selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
                 route_trace.append(
@@ -585,11 +620,42 @@ class KnowledgeService:
         ) as span:
             selected_ids: list[str] = []
             if model_config:
-                selected_ids = self._select_buckets_with_llm(
-                    query, buckets, request.max_buckets, model_config, route_trace
+                route_buckets = _route_candidates(
+                    _score_buckets(query, buckets, request.query_type),
+                    buckets,
+                    SEARCH_BUCKET_ROUTE_LIMIT,
                 )
+                llm_bucket_ids = self._select_buckets_with_llm(
+                    query,
+                    route_buckets,
+                    request.max_buckets,
+                    model_config,
+                    route_trace,
+                    request.query_type,
+                )
+                if llm_bucket_ids is None:
+                    selected_ids = [
+                        bucket.id
+                        for bucket in _score_buckets(query, buckets, request.query_type)[
+                            : request.max_buckets
+                        ]
+                    ]
+                    route_trace.append(
+                        {
+                            "phase": "bucket_route_lexical_fallback",
+                            "message": "模型路由不可用，已按检索相关性选择内部索引",
+                            "selected_count": len(selected_ids),
+                        }
+                    )
+                else:
+                    selected_ids = llm_bucket_ids
             else:
-                selected_ids = [bucket.id for bucket in _score_buckets(query, buckets)[: request.max_buckets]]
+                selected_ids = [
+                    bucket.id
+                    for bucket in _score_buckets(query, buckets, request.query_type)[
+                        : request.max_buckets
+                    ]
+                ]
                 route_trace.append(
                     {
                         "phase": "bucket_route_lexical",
@@ -631,15 +697,16 @@ class KnowledgeService:
             chunks = self._load_chunks_for_buckets(
                 request.tenant_id,
                 selected_ids,
-                max(request.max_chunks * 3, request.max_chunks),
+                None,
             )
             span.finish(candidate_count=len(chunks))
         with observed_span(
             "knowledge_span", "knowledge.rank_chunks", candidate_count=len(chunks)
         ) as span:
-            ranked_chunks = _rank_chunks(query, chunks, selected_buckets, expanded_sections)[
+            ranked_hits = _rank_chunks(query, chunks, selected_buckets, expanded_sections)[
                 : request.max_chunks
             ]
+            ranked_chunks = _expand_related_chunks(ranked_hits, chunks)
             span.finish(selected_count=len(ranked_chunks))
         with observed_span(
             "knowledge_span",
@@ -748,6 +815,7 @@ class KnowledgeService:
                 summary=str(spec.get("summary") or content[:300]),
                 token_estimate=max(1, len(content) // 2),
                 metadata_json={
+                    "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
                     "content": content[:BUCKET_SECTION_CHARS],
                     "bucket_type": str(spec.get("bucket_type") or "structure"),
                     "concept_type": str(spec.get("concept_type") or "Topic"),
@@ -796,10 +864,18 @@ class KnowledgeService:
                     }
                 ]
             local_index = 0
+            related_rows_by_group: dict[str, list[KnowledgeChunk]] = {}
             for section in section_sources:
                 self._raise_if_ingest_cancelled(job)
                 content = str(section.get("content") or "")
                 parts = _chunk_text(content, EVIDENCE_CHUNK_CHARS)
+                related_section_id = (
+                    section.get("related_section_id")
+                    or section.get("section_id")
+                    or local_index
+                )
+                related_group_id = f"{document.id}:{bucket.id}:{related_section_id}"
+                related_rows = related_rows_by_group.setdefault(related_group_id, [])
                 for part in parts:
                     self._raise_if_ingest_cancelled(job)
                     source_path = f"{document.filename} / {section.get('path') or bucket.title} / evidence {local_index + 1}"
@@ -814,7 +890,10 @@ class KnowledgeService:
                         summary=_summarize_text(part, 180),
                         source_ref=source_path,
                         metadata_json={
+                            "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
                             "node_type": "evidence_chunk",
+                            "related_group_id": related_group_id,
+                            "related_chunk_index": len(related_rows),
                             "section_id": section.get("section_id"),
                             "section_path": section.get("path"),
                             "section_title": section.get("title"),
@@ -825,9 +904,30 @@ class KnowledgeService:
                     )
                     self.db.add(row)
                     self.db.flush()
+                    related_rows.append(row)
                     chunk_ids_by_bucket.setdefault(bucket.id, []).append(row.id)
                     count += 1
                     local_index += 1
+            for related_rows in related_rows_by_group.values():
+                for related_index, row in enumerate(related_rows):
+                    related_window = _related_chunk_window(related_rows, related_index)
+                    related_ids = [item.id for item in related_window]
+                    window_index = related_ids.index(row.id)
+                    row_metadata = dict(row.metadata_json or {})
+                    row_metadata.update(
+                        {
+                            "related_chunk_ids": related_ids,
+                            "related_chunk_count": len(related_ids),
+                            "related_previous_chunk_id": related_ids[window_index - 1]
+                            if window_index > 0
+                            else None,
+                            "related_next_chunk_id": related_ids[window_index + 1]
+                            if window_index + 1 < len(related_ids)
+                            else None,
+                        }
+                    )
+                    row.metadata_json = row_metadata
+                    self.db.add(row)
         for bucket in buckets:
             metadata = dict(bucket.metadata_json or {})
             metadata["representative_chunk_ids"] = chunk_ids_by_bucket.get(bucket.id, [])[:3]
@@ -963,7 +1063,7 @@ class KnowledgeService:
             stmt = stmt.where(KnowledgeDocument.knowledge_base_version_id.in_(request.knowledge_base_version_ids))
         if request.document_ids:
             stmt = stmt.where(KnowledgeDocument.id.in_(request.document_ids))
-        return self.db.exec(stmt.order_by(KnowledgeDocument.updated_at.desc()).limit(SEARCH_DOCUMENT_LIMIT)).all()
+        return self.db.exec(stmt.order_by(KnowledgeDocument.updated_at.desc())).all()
 
     def _load_concepts_for_search(self, request: KnowledgeSearchRequest) -> list[KnowledgeConcept]:
         stmt = select(KnowledgeConcept).where(
@@ -989,7 +1089,7 @@ class KnowledgeService:
             stmt = stmt.where(KnowledgeBucket.knowledge_base_id.in_(request.knowledge_base_ids))
         if request.knowledge_base_version_ids:
             stmt = stmt.where(KnowledgeBucket.knowledge_base_version_id.in_(request.knowledge_base_version_ids))
-        return self.db.exec(stmt.order_by(KnowledgeBucket.created_at.asc()).limit(SEARCH_BUCKET_LIMIT)).all()
+        return self.db.exec(stmt.order_by(KnowledgeBucket.created_at.asc())).all()
 
     def _select_documents_with_llm(
         self,
@@ -998,7 +1098,7 @@ class KnowledgeService:
         max_documents: int,
         model_config: ModelConfig,
         trace: list[dict[str, Any]],
-    ) -> list[str]:
+    ) -> list[str] | None:
         payload = {
             "query": query,
             "max_documents": max_documents,
@@ -1011,10 +1111,11 @@ class KnowledgeService:
                 )
         except (LLMError, Exception) as exc:
             trace.append({"phase": "document_route_failed", "message": str(exc)})
-            return []
+            return None
         ids = raw.get("selected_document_ids") if isinstance(raw, dict) else None
         if not isinstance(ids, list):
-            return []
+            trace.append({"phase": "document_route_invalid", "message": "模型未返回文档 ID 数组"})
+            return None
         allowed = {row.id for row in documents}
         return [str(item) for item in ids if str(item) in allowed][:max_documents]
 
@@ -1025,9 +1126,11 @@ class KnowledgeService:
         max_buckets: int,
         model_config: ModelConfig,
         trace: list[dict[str, Any]],
-    ) -> list[str]:
+        query_type: str = "answer",
+    ) -> list[str] | None:
         payload = {
             "query": query,
+            "query_type": query_type,
             "max_buckets": max_buckets,
             "buckets": [
                 {
@@ -1036,10 +1139,15 @@ class KnowledgeService:
                     "summary": bucket.summary,
                     "document_id": bucket.document_id,
                     "bucket_type": (bucket.metadata_json or {}).get("bucket_type"),
-                    "section_paths": (bucket.metadata_json or {}).get("section_paths", []),
+                    "applicable_query_types": (bucket.metadata_json or {}).get(
+                        "applicable_query_types", []
+                    ),
+                    "section_paths": _route_labels(
+                        (bucket.metadata_json or {}).get("section_paths", []), 12, 80
+                    ),
                     "quality": (bucket.metadata_json or {}).get("quality", {}),
                 }
-                for bucket in buckets[:80]
+                for bucket in buckets
             ],
         }
         try:
@@ -1049,22 +1157,27 @@ class KnowledgeService:
                 )
         except (LLMError, Exception) as exc:
             trace.append({"phase": "bucket_selection_failed", "message": str(exc)})
-            return []
+            return None
         ids = raw.get("selected_bucket_ids") if isinstance(raw, dict) else None
         if not isinstance(ids, list):
-            return []
+            trace.append({"phase": "bucket_route_invalid", "message": "模型未返回内部索引 ID 数组"})
+            return None
         allowed = {bucket.id for bucket in buckets}
         return [str(item) for item in ids if str(item) in allowed][:max_buckets]
 
-    def _load_chunks_for_buckets(self, tenant_id: str, bucket_ids: list[str], max_chunks: int) -> list[KnowledgeChunk]:
+    def _load_chunks_for_buckets(
+        self, tenant_id: str, bucket_ids: list[str], max_chunks: int | None = None
+    ) -> list[KnowledgeChunk]:
         if not bucket_ids:
             return []
-        return self.db.exec(
+        statement = (
             select(KnowledgeChunk)
             .where(KnowledgeChunk.tenant_id == tenant_id, KnowledgeChunk.bucket_id.in_(bucket_ids))
             .order_by(KnowledgeChunk.bucket_id, KnowledgeChunk.chunk_index)
-            .limit(max_chunks)
-        ).all()
+        )
+        if max_chunks is not None and max_chunks > 0:
+            statement = statement.limit(max_chunks)
+        return self.db.exec(statement).all()
 
     def _confirm_tool(self, suggestion: KnowledgeDiscoverySuggestion, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or payload.get("tool_name") or "").strip()
@@ -1359,8 +1472,9 @@ def _paragraph_blocks(text: str) -> list[str]:
 
 def _looks_like_heading(text: str) -> bool:
     stripped = text.strip()
-    return stripped.startswith("#") or (
-        len(stripped) <= 48 and stripped.endswith(("：", ":"))
+    return bool(
+        re.match(r"^#{1,6}\s+\S", stripped)
+        or re.match(r"^第[一二三四五六七八九十百千万0-9]+[章节篇部分]\b", stripped)
     )
 
 
@@ -1426,6 +1540,7 @@ def _build_section_nodes(text: str) -> list[dict[str, Any]]:
         return [
             {
                 "section_id": "sec_1",
+                "related_section_id": "sec_1",
                 "node_type": "section",
                 "level": 1,
                 "title": "全文",
@@ -1460,7 +1575,13 @@ def _build_section_nodes(text: str) -> list[dict[str, Any]]:
         current = None
         current_parts = []
 
-    def start_section(title: str, level: int, paragraph_index: int, parent_id: str | None = None) -> dict[str, Any]:
+    def start_section(
+        title: str,
+        level: int,
+        paragraph_index: int,
+        parent_id: str | None = None,
+        related_section_id: str | None = None,
+    ) -> dict[str, Any]:
         section_id = f"sec_{len(nodes) + 1}"
         parent = next((stack[item] for item in sorted(stack, reverse=True) if item < level), None)
         resolved_parent_id = parent_id if parent_id is not None else (parent.get("section_id") if parent else None)
@@ -1468,6 +1589,7 @@ def _build_section_nodes(text: str) -> list[dict[str, Any]]:
         path = f"{parent_path} / {title}" if parent_path else title
         return {
             "section_id": section_id,
+            "related_section_id": related_section_id or section_id,
             "node_type": "section",
             "level": level,
             "title": title,
@@ -1500,10 +1622,19 @@ def _build_section_nodes(text: str) -> list[dict[str, Any]]:
         projected = sum(len(part) for part in current_parts) + len(paragraph)
         if current_parts and projected > SECTION_TARGET_CHARS:
             parent_id = str(current.get("parent_id") or "")
+            related_section_id = str(
+                current.get("related_section_id") or current.get("section_id") or ""
+            )
             title = str(current.get("title") or f"段落组 {len(nodes) + 1}")
             level = int(current.get("level") or 1)
             flush(index - 1)
-            current = start_section(title, level, index, parent_id or None)
+            current = start_section(
+                title,
+                level,
+                index,
+                parent_id or None,
+                related_section_id or None,
+            )
             current_parts = []
             current_start = index
         current_parts.append(paragraph)
@@ -1561,11 +1692,6 @@ def _heading_info(text: str) -> tuple[int, str] | None:
     chapter = re.match(r"^第[一二三四五六七八九十百千万0-9]+[章节篇部分]\s*[：:\-、]?\s*(.+)?$", stripped)
     if chapter:
         return 1, (chapter.group(1) or stripped).strip()
-    numbered = re.match(r"^(\d+(?:\.\d+){0,4})[、.\s]+(.{2,80})$", stripped)
-    if numbered:
-        return min(numbered.group(1).count(".") + 1, 5), numbered.group(2).strip()
-    if _looks_like_heading(stripped):
-        return 2, stripped.strip("# ：:")
     return None
 
 
@@ -1765,11 +1891,24 @@ def _document_card_for_route(row: KnowledgeDocument) -> dict[str, Any]:
         "filename": _summarize_text(str(card.get("filename") or ""), 120),
         "file_type": card.get("file_type"),
         "summary": _summarize_text(str(card.get("summary") or ""), 160),
-        "outline": _route_labels(card.get("outline"), 2, 60),
-        "key_entities": _route_labels(card.get("key_entities"), 3, 30),
+        "outline": _route_labels(card.get("outline"), 16, 80),
+        "key_entities": _route_labels(card.get("key_entities"), 12, 40),
         "section_count": card.get("section_count"),
         "chunk_count": card.get("chunk_count"),
     }
+
+
+def _route_candidates(ranked: list[Any], candidates: list[Any], limit: int) -> list[Any]:
+    selected = list(ranked[:limit])
+    selected_ids = {str(getattr(item, "id", "")) for item in selected}
+    for item in candidates:
+        item_id = str(getattr(item, "id", ""))
+        if item_id and item_id not in selected_ids:
+            selected.append(item)
+            selected_ids.add(item_id)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _route_labels(value: object, limit: int, char_limit: int) -> list[str]:
@@ -1798,15 +1937,12 @@ def _route_labels(value: object, limit: int, char_limit: int) -> list[str]:
 def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[KnowledgeDocument]:
     scored: list[tuple[float, KnowledgeDocument]] = []
     for row in documents:
-        score = _score_text(
+        card = (row.metadata_json or {}).get("document_card", {})
+        score = _score_weighted_text(
             query,
-            " ".join(
-                [
-                    row.title or "",
-                    row.filename,
-                    json.dumps((row.metadata_json or {}).get("document_card", {}), ensure_ascii=False)[:4000],
-                ]
-            ),
+            (row.title or "", 3.0),
+            (row.filename, 2.0),
+            (json.dumps(card, ensure_ascii=False), 1.0),
         )
         if score >= SEARCH_MIN_DOCUMENT_SCORE:
             scored.append((score, row))
@@ -1814,19 +1950,24 @@ def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[Kno
     return [row for _score, row in scored]
 
 
-def _score_buckets(query: str, buckets: list[KnowledgeBucket]) -> list[KnowledgeBucket]:
+def _score_buckets(
+    query: str,
+    buckets: list[KnowledgeBucket],
+    query_type: str = "answer",
+) -> list[KnowledgeBucket]:
     scored: list[tuple[float, KnowledgeBucket]] = []
     for row in buckets:
-        score = _score_text(
+        metadata = row.metadata_json or {}
+        score = _score_weighted_text(
             query,
-            " ".join(
-                [
-                    row.title,
-                    row.summary,
-                    json.dumps(row.metadata_json or {}, ensure_ascii=False)[:3000],
-                ]
-            ),
+            (row.title, 3.0),
+            (row.summary, 1.8),
+            (" ".join(str(item) for item in metadata.get("section_paths", [])), 1.4),
+            (str(metadata.get("content") or ""), 0.6),
         )
+        applicable_query_types = metadata.get("applicable_query_types", [])
+        if isinstance(applicable_query_types, list) and query_type in applicable_query_types:
+            score += 2.0
         if score >= SEARCH_MIN_BUCKET_SCORE:
             scored.append((score, row))
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -1840,13 +1981,28 @@ def _rank_chunks(
     expanded_sections: list[dict[str, Any]],
 ) -> list[KnowledgeChunk]:
     bucket_rank = {bucket.id: index for index, bucket in enumerate(selected_buckets)}
-    section_ids = {str(item.get("section_id")) for item in expanded_sections if item.get("section_id")}
+    section_scores = {
+        str(item.get("section_id")): _score_weighted_text(
+            query,
+            (str(item.get("title") or ""), 2.0),
+            (str(item.get("path") or ""), 1.5),
+            (str(item.get("summary") or ""), 1.0),
+        )
+        for item in expanded_sections
+        if item.get("section_id")
+    }
 
     scored: list[tuple[tuple[float, int, int], KnowledgeChunk]] = []
     for chunk in chunks:
         metadata = chunk.metadata_json or {}
-        section_bonus = 2 if str(metadata.get("section_id")) in section_ids else 0
-        text_score = _score_text(query, f"{chunk.summary or ''} {chunk.content}")
+        section_bonus = min(3.0, section_scores.get(str(metadata.get("section_id")), 0.0) * 0.2)
+        text_score = _score_weighted_text(
+            query,
+            (str(metadata.get("section_title") or ""), 2.0),
+            (str(metadata.get("section_path") or ""), 1.5),
+            (chunk.summary or "", 1.4),
+            (chunk.content, 1.0),
+        )
         if text_score < SEARCH_MIN_CHUNK_SCORE:
             continue
         scored.append(((text_score + section_bonus, -bucket_rank.get(chunk.bucket_id, 999), -chunk.chunk_index), chunk))
@@ -1854,24 +2010,118 @@ def _rank_chunks(
     return [chunk for _score, chunk in scored]
 
 
+def _expand_related_chunks(
+    ranked_hits: list[KnowledgeChunk],
+    candidates: list[KnowledgeChunk],
+) -> list[KnowledgeChunk]:
+    """Return each hit and every chunk from its contiguous source section."""
+    if not ranked_hits:
+        return []
+    candidates_by_id = {chunk.id: chunk for chunk in candidates}
+    candidates_by_group: dict[str, list[KnowledgeChunk]] = {}
+    for chunk in candidates:
+        group_id = str((chunk.metadata_json or {}).get("related_group_id") or "").strip()
+        if group_id:
+            candidates_by_group.setdefault(group_id, []).append(chunk)
+    for group in candidates_by_group.values():
+        group.sort(key=lambda row: (row.chunk_index, row.id))
+
+    expanded: list[KnowledgeChunk] = []
+    seen: set[str] = set()
+    seen_groups: set[str] = set()
+    for hit in ranked_hits:
+        metadata = hit.metadata_json or {}
+        group_id = str(metadata.get("related_group_id") or "").strip()
+        related_ids = [
+            str(item)
+            for item in metadata.get("related_chunk_ids", [])
+            if str(item) in candidates_by_id
+        ]
+        group = [candidates_by_id[item] for item in related_ids]
+        if not group and group_id:
+            full_group = candidates_by_group.get(group_id, [])
+            hit_index = next(
+                (index for index, chunk in enumerate(full_group) if chunk.id == hit.id),
+                0,
+            )
+            group = _related_chunk_window(full_group, hit_index)
+        if group:
+            if group_id in seen_groups:
+                if hit.id not in seen:
+                    expanded.append(hit)
+                    seen.add(hit.id)
+                continue
+            seen_groups.add(group_id)
+            for chunk in sorted(group, key=lambda row: (row.chunk_index, row.id)):
+                if chunk.id not in seen:
+                    expanded.append(chunk)
+                    seen.add(chunk.id)
+            continue
+        if hit.id not in seen:
+            expanded.append(hit)
+            seen.add(hit.id)
+    # Each expanded group is emitted in source order; hit groups retain relevance priority.
+    return expanded
+
+
+def _related_chunk_window(
+    chunks: list[KnowledgeChunk],
+    center_index: int,
+) -> list[KnowledgeChunk]:
+    if not chunks:
+        return []
+    center_index = min(max(center_index, 0), len(chunks) - 1)
+    selected = [center_index]
+    total_chars = len(chunks[center_index].content)
+    distance = 1
+    while len(selected) < RELATED_CHUNK_MAX_COUNT:
+        added = False
+        for index in (center_index - distance, center_index + distance):
+            if index < 0 or index >= len(chunks):
+                continue
+            chunk_chars = len(chunks[index].content)
+            if total_chars + chunk_chars > RELATED_CHUNK_MAX_CHARS:
+                continue
+            selected.append(index)
+            total_chars += chunk_chars
+            added = True
+            if len(selected) >= RELATED_CHUNK_MAX_COUNT:
+                break
+        if not added and center_index - distance < 0 and center_index + distance >= len(chunks):
+            break
+        distance += 1
+        if distance > len(chunks):
+            break
+    return [chunks[index] for index in sorted(selected)]
+
+
 def _build_evidence_pack(query: str, chunks: list[KnowledgeChunk]) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     for chunk in chunks:
+        metadata = chunk.metadata_json or {}
         score = _score_text(query, f"{chunk.summary or ''} {chunk.content}")
-        if score < SEARCH_MIN_EVIDENCE_SCORE:
+        related_group_id = str(metadata.get("related_group_id") or "").strip()
+        if score < SEARCH_MIN_EVIDENCE_SCORE and not related_group_id:
             continue
         evidence.append(
             {
                 "chunk_id": chunk.id,
+                "related_group_id": related_group_id or None,
+                "related_chunk_ids": metadata.get("related_chunk_ids") or [],
+                "related_chunk_index": metadata.get("related_chunk_index"),
                 "document_id": chunk.document_id,
                 "bucket_id": chunk.bucket_id,
                 "source_path": chunk.source_ref,
-                "section_path": (chunk.metadata_json or {}).get("section_path"),
+                "section_path": metadata.get("section_path"),
                 "summary": chunk.summary,
                 "content": chunk.content[:CITATION_EXCERPT_CHAR_LIMIT],
                 "excerpt": chunk.content[:CITATION_EXCERPT_CHAR_LIMIT],
                 "relevance_score": round(score, 2),
-                "confidence_reason": "引用来源摘要、章节路径或正文与查询相关",
+                "confidence_reason": (
+                    "与命中片段属于同一连续章节"
+                    if score < SEARCH_MIN_EVIDENCE_SCORE
+                    else "引用来源摘要、章节路径或正文与查询相关"
+                ),
             }
         )
     return evidence
@@ -1943,6 +2193,12 @@ def _query_terms(query: str) -> list[str]:
     terms: list[str] = []
     for term in re.findall(r"[A-Za-z0-9_.-]{2,}|[\u4e00-\u9fff]{2,}", query or ""):
         normalized = term.lower()
+        if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
+            for phrase in QUERY_NOISE_PHRASES:
+                normalized = normalized.replace(phrase, "")
+        normalized = normalized.strip()
+        if len(normalized) < 2:
+            continue
         terms.append(normalized)
         if re.fullmatch(r"[\u4e00-\u9fff]{3,}", normalized):
             for size in (4, 3, 2):
@@ -1960,6 +2216,14 @@ def _query_terms(query: str) -> list[str]:
 
 
 def _score_text(query: str, text: str) -> float:
+    variants = _query_variants(query)
+    if not variants:
+        return 0.0
+    scores = sorted((_score_single_query(variant, text) for variant in variants), reverse=True)
+    return scores[0] + sum(scores[1:]) * 0.15
+
+
+def _score_single_query(query: str, text: str) -> float:
     haystack = (text or "").lower()
     score = 0.0
     if query and query.lower() in haystack:
@@ -1967,15 +2231,31 @@ def _score_text(query: str, text: str) -> float:
     for term in _query_terms(query):
         count = haystack.count(term)
         if count:
-            term_weight = 2.0
+            term_weight = 1.2
             if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term):
-                term_weight = 2.5
+                term_weight = 2.0
             if re.fullmatch(r"[\u4e00-\u9fff]{4,}", term):
-                term_weight = 3.0
+                term_weight = 2.7
             if len(term) >= 5:
-                term_weight = 3.4
-            score += min(8.0, count * term_weight)
+                term_weight = 3.2
+            score += term_weight * min(1.5, 1.0 + (count - 1) * 0.15)
     return score
+
+
+def _score_weighted_text(query: str, *fields: tuple[str, float]) -> float:
+    return sum(_score_text(query, text) * weight for text, weight in fields if text)
+
+
+def _query_variants(query: str) -> list[str]:
+    variants: list[str] = []
+    seen: set[str] = set()
+    for value in (query or "").splitlines():
+        normalized = re.sub(r"\s+", " ", value).strip()
+        identity = normalized.lower()
+        if normalized and identity not in seen:
+            seen.add(identity)
+            variants.append(normalized)
+    return variants
 
 
 def _guess_title(section: str, index: int) -> str:
