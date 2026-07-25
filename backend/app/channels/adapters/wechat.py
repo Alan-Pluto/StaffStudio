@@ -299,7 +299,14 @@ class WeChatAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wechat_message(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
         to_user_id = str(target.get("to_user_id") or "").strip()
         context_token = str(target.get("context_token") or "").strip()
         if not to_user_id or not context_token:

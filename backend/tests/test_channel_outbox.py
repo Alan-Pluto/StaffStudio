@@ -1,13 +1,28 @@
+import threading
 from datetime import timedelta
 
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.channels.adapters import base as adapter_registry
 from app.channels.adapters.base import register_channel_adapter
-from app.channels.service_outbox import run_delivery_daemon, stage_channel_delivery
+from app.channels.service_outbox import (
+    cleanup_feishu_reactions_before_binding_delete,
+    run_delivery_daemon,
+    run_reaction_delivery_daemon,
+    stage_channel_delivery,
+)
 from app.config import get_settings
-from app.db.models import ChannelBinding, ChannelDelivery, ChatSession, Message, Tenant, utc_now
+from app.db.models import (
+    ChannelBinding,
+    ChannelDelivery,
+    ChannelInboundEvent,
+    ChatSession,
+    Message,
+    Tenant,
+    utc_now,
+)
 
 
 class FakeAdapter:
@@ -15,11 +30,70 @@ class FakeAdapter:
         self.fail_times = fail_times
         self.sent: list[tuple[str, dict, str]] = []
 
-    def send(self, binding: ChannelBinding, target: dict, text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict,
+        text: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("模拟发送失败")
         self.sent.append((binding.id, target, text))
+
+
+class FakeFeishuAdapter(FakeAdapter):
+    def __init__(
+        self,
+        *,
+        fail_reaction_add: bool = False,
+        recovered_reaction_id: str | None = None,
+    ):
+        super().__init__()
+        self.fail_reaction_add = fail_reaction_add
+        self.recovered_reaction_id = recovered_reaction_id
+        self.calls: list[tuple[str, str, str]] = []
+
+    def add_reaction(
+        self,
+        binding: ChannelBinding,
+        message_id: str,
+        emoji_type: str,
+    ) -> str:
+        self.calls.append(("add", message_id, emoji_type))
+        if self.fail_reaction_add:
+            raise RuntimeError("reaction unavailable")
+        return "reaction_123"
+
+    def find_own_reaction(
+        self,
+        binding: ChannelBinding,
+        message_id: str,
+        emoji_type: str,
+    ) -> str | None:
+        self.calls.append(("find", message_id, emoji_type))
+        return self.recovered_reaction_id
+
+    def remove_reaction(
+        self,
+        binding: ChannelBinding,
+        message_id: str,
+        reaction_id: str,
+    ) -> None:
+        self.calls.append(("remove", message_id, reaction_id))
+
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict,
+        text: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
+        self.calls.append(("send", str(target.get("message_id") or ""), text))
+        super().send(binding, target, text, idempotency_key=idempotency_key)
 
 
 def _test_engine():
@@ -127,7 +201,7 @@ def test_staging_is_idempotent_per_message() -> None:
         assert len(db.exec(select(ChannelDelivery)).all()) == 1
 
 
-def test_staging_never_breaks_main_flow() -> None:
+def test_channel_staging_failure_propagates() -> None:
     class BrokenDb:
         def exec(self, _statement):
             raise RuntimeError("db 炸了")
@@ -138,13 +212,14 @@ def test_staging_never_breaks_main_flow() -> None:
         agent_id="agent_1",
         channel="fake",
         channel_target_json={"to_user_id": "u1", "context_token": "ctx"},
+        channel_account_key="fake:account",
     )
     message = _assistant_message("session_chan", "msg_x")
-    # 不抛异常,只记日志
-    stage_channel_delivery(BrokenDb(), chat_session, message)
+    with pytest.raises(RuntimeError, match="db 炸了"):
+        stage_channel_delivery(BrokenDb(), chat_session, message)
 
 
-def test_legacy_session_claim_conflict_does_not_poison_main_transaction() -> None:
+def test_legacy_session_claim_conflict_fails_channel_transaction() -> None:
     engine = _test_engine()
     with Session(engine) as db:
         binding = _seed_binding(db)
@@ -159,18 +234,17 @@ def test_legacy_session_claim_conflict_does_not_poison_main_transaction() -> Non
         db.add(message)
         db.commit()
 
-        stage_channel_delivery(db, legacy, message)
-        message.content = "主事务仍可提交"
-        db.add(message)
-        db.commit()
+        with pytest.raises(RuntimeError, match="认领冲突"):
+            stage_channel_delivery(db, legacy, message)
+        db.rollback()
 
         db.refresh(legacy)
         assert legacy.channel_binding_id is None
         assert db.exec(select(ChannelDelivery)).all() == []
-        assert db.get(Message, message.id).content == "主事务仍可提交"
+        assert db.get(Message, message.id).content == "回复内容"
 
 
-def test_missing_target_skips_staging() -> None:
+def test_missing_target_stages_failed_delivery_for_audit() -> None:
     engine = _test_engine()
     with Session(engine) as db:
         binding = _seed_binding(db)
@@ -183,7 +257,10 @@ def test_missing_target_skips_staging() -> None:
 
         stage_channel_delivery(db, chat_session, message)
         db.commit()
-        assert db.exec(select(ChannelDelivery)).all() == []
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.status == "failed"
+        assert delivery.last_error == "delivery_target_missing"
+        assert delivery.next_attempt_at is None
 
 
 def _make_delivery(db: Session, binding: ChannelBinding, **overrides) -> ChannelDelivery:
@@ -387,6 +464,425 @@ def test_unregistered_channel_marks_failed_eventually(monkeypatch) -> None:
         delivery = db.get(ChannelDelivery, delivery_id)
         assert delivery.status == "failed"
         assert "未注册" in (delivery.last_error or "")
+
+
+def _seed_feishu_reaction_event(db: Session, binding: ChannelBinding) -> ChannelInboundEvent:
+    event = ChannelInboundEvent(
+        id="event_feishu",
+        tenant_id=binding.tenant_id,
+        binding_id=binding.id,
+        channel="feishu",
+        event_id="om_feishu",
+        target_json={"message_id": "om_feishu", "receive_id": "ou_user"},
+        status="done",
+    )
+    db.add(event)
+    db.commit()
+    return event
+
+
+def _seed_feishu_delivery(
+    db: Session,
+    binding: ChannelBinding,
+    event: ChannelInboundEvent,
+    *,
+    kind: str,
+    status: str = "pending",
+    final: bool = True,
+) -> ChannelDelivery:
+    target = {"message_id": event.event_id, "event_pk": event.id}
+    if kind == "reaction_remove":
+        target["reaction_id"] = event.reaction_id
+    if final and kind not in {"reaction_add", "reaction_remove"}:
+        target["reaction_final"] = True
+    delivery = ChannelDelivery(
+        tenant_id=binding.tenant_id,
+        binding_id=binding.id,
+        session_id=f"event:{event.id}",
+        target_json=target,
+        kind=kind,
+        text="Get" if kind == "reaction_add" else "处理完成",
+        status=status,
+        next_attempt_at=utc_now() if status == "pending" else None,
+        delivered_at=utc_now() if status == "delivered" else None,
+        idempotency_key=f"test:{kind}",
+    )
+    db.add(delivery)
+    db.commit()
+    return delivery
+
+
+def test_feishu_reaction_is_removed_after_response_delivery(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        response = _seed_feishu_delivery(db, binding, event, kind="notice")
+        event_id = event.id
+        reaction_add_id = reaction_add.id
+        response_id = response.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id == "reaction_123"
+        assert db.get(ChannelDelivery, reaction_add_id).status == "delivered"
+        assert db.get(ChannelDelivery, response_id).status == "delivered"
+        cleanup = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).one()
+        assert cleanup.status == "pending"
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id is None
+        cleanup = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).one()
+        assert cleanup.status == "delivered"
+    assert adapter.calls == [
+        ("add", "om_feishu", "Get"),
+        ("send", "om_feishu", "处理完成"),
+        ("remove", "om_feishu", "reaction_123"),
+    ]
+
+
+def test_delayed_feishu_reaction_is_cleaned_after_existing_response(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        _seed_feishu_delivery(db, binding, event, kind="notice", status="delivered")
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        event_id = event.id
+        reaction_add_id = reaction_add.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id == "reaction_123"
+        assert db.get(ChannelDelivery, reaction_add_id).status == "delivered"
+        cleanup = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).one()
+        assert cleanup.status == "pending"
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id is None
+    assert adapter.calls == [
+        ("add", "om_feishu", "Get"),
+        ("remove", "om_feishu", "reaction_123"),
+    ]
+
+
+def test_feishu_reaction_failure_does_not_block_response(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter(fail_reaction_add=True)
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    settings = get_settings().model_copy(update={"channel_delivery_max_attempts": 1})
+    monkeypatch.setattr("app.channels.service_outbox.get_settings", lambda: settings)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        response = _seed_feishu_delivery(db, binding, event, kind="notice")
+        reaction_add_id = reaction_add.id
+        response_id = response.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        failed_reaction = db.get(ChannelDelivery, reaction_add_id)
+        delivered_response = db.get(ChannelDelivery, response_id)
+        assert failed_reaction.status == "failed"
+        assert failed_reaction.last_error == "reaction unavailable"
+        assert delivered_response.status == "delivered"
+        assert db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).all() == []
+    assert adapter.calls == [
+        ("add", "om_feishu", "Get"),
+        ("send", "om_feishu", "处理完成"),
+    ]
+
+
+def test_content_lane_does_not_wait_for_pending_reaction(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        response = _seed_feishu_delivery(db, binding, event, kind="notice")
+        reaction_add_id = reaction_add.id
+        response_id = response.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, reaction_add_id).status == "pending"
+        assert db.get(ChannelDelivery, response_id).status == "delivered"
+    assert adapter.calls == [("send", "om_feishu", "处理完成")]
+
+
+def test_reaction_retry_recovers_remote_reaction_before_readding(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter(recovered_reaction_id="reaction_recovered")
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        reaction_add.status = "sending"
+        reaction_add.attempts = 1
+        reaction_add.first_attempt_at = utc_now()
+        db.add(reaction_add)
+        db.commit()
+        event_id = event.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        event = db.get(ChannelInboundEvent, event_id)
+        assert event.reaction_id == "reaction_recovered"
+        delivery = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_add")
+        ).one()
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 2
+    assert adapter.calls == [("find", "om_feishu", "Get")]
+
+
+def test_intermediate_notice_does_not_remove_reaction(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        event.reaction_id = "reaction_123"
+        db.add(event)
+        db.commit()
+        _seed_feishu_delivery(db, binding, event, kind="notice", final=False)
+        event_id = event.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id == "reaction_123"
+        assert db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).all() == []
+        binding = db.exec(select(ChannelBinding).where(ChannelBinding.channel == "feishu")).one()
+        event = db.get(ChannelInboundEvent, event_id)
+        _seed_feishu_delivery(db, binding, event, kind="error_notice")
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        cleanup = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).one()
+        assert cleanup.status == "pending"
+
+
+def test_disabled_feishu_binding_can_finish_reaction_cleanup(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        binding.credentials_enc = "encrypted-secret"
+        event = _seed_feishu_reaction_event(db, binding)
+        event.reaction_id = "reaction_123"
+        db.add(event)
+        db.commit()
+        cleanup = _seed_feishu_delivery(db, binding, event, kind="reaction_remove")
+        binding.status = "disabled"
+        db.add(binding)
+        db.commit()
+        event_id = event.id
+        cleanup_id = cleanup.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id is None
+        assert db.get(ChannelDelivery, cleanup_id).status == "delivered"
+    assert adapter.calls == [("remove", "om_feishu", "reaction_123")]
+
+
+def test_disabled_binding_reconciles_ambiguous_reaction_without_readding(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter(recovered_reaction_id="reaction_recovered")
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        binding.credentials_enc = "encrypted-secret"
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        reaction_add.attempts = 1
+        binding.status = "disabled"
+        db.add(reaction_add)
+        db.add(binding)
+        db.commit()
+        event_id = event.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        event = db.get(ChannelInboundEvent, event_id)
+        assert event.reaction_id == "reaction_recovered"
+        cleanup = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).one()
+        assert cleanup.status == "pending"
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id is None
+    assert adapter.calls == [
+        ("find", "om_feishu", "Get"),
+        ("remove", "om_feishu", "reaction_recovered"),
+    ]
+
+
+def test_disabled_binding_does_not_start_a_fresh_reaction_add(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        binding.credentials_enc = "encrypted-secret"
+        event = _seed_feishu_reaction_event(db, binding)
+        delivery = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        binding.status = "disabled"
+        db.add(binding)
+        db.commit()
+        delivery_id = delivery.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.attempts == 1
+    assert adapter.calls == []
+
+
+def test_binding_delete_cleanup_removes_known_feishu_reactions(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        event.reaction_id = "reaction_123"
+        db.add(event)
+        db.commit()
+
+        cleanup_feishu_reactions_before_binding_delete(db, binding)
+        db.commit()
+
+        assert db.get(ChannelInboundEvent, event.id).reaction_id is None
+    assert adapter.calls == [("remove", "om_feishu", "reaction_123")]
+
+
+@pytest.mark.parametrize("status", ["pending", "sending", "failed"])
+def test_binding_delete_cleanup_reconciles_unknown_reaction(
+    monkeypatch,
+    status: str,
+) -> None:
+    engine = _test_engine()
+    adapter = FakeFeishuAdapter(recovered_reaction_id="reaction_recovered")
+    monkeypatch.setitem(adapter_registry._adapters, "feishu", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="feishu")
+        event = _seed_feishu_reaction_event(db, binding)
+        reaction_add = _seed_feishu_delivery(db, binding, event, kind="reaction_add")
+        reaction_add.status = status
+        reaction_add.attempts = 1
+        db.add(reaction_add)
+        db.commit()
+
+        cleanup_feishu_reactions_before_binding_delete(db, binding)
+    assert adapter.calls == [
+        ("find", "om_feishu", "Get"),
+        ("remove", "om_feishu", "reaction_recovered"),
+    ]
+
+
+def test_two_workers_atomically_claim_one_delivery(tmp_path) -> None:
+    import app.channels.service_outbox as outbox
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'outbox.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    adapter = FakeAdapter()
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        delivery = ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=chat_session.id,
+            message_id="msg_atomic",
+            target_json=dict(chat_session.channel_target_json or {}),
+            kind="reply",
+            text="only once",
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key="msg_atomic",
+        )
+        db.add(chat_session)
+        db.add(delivery)
+        db.commit()
+        delivery_id = delivery.id
+
+    barrier = threading.Barrier(2)
+    claimed: list[bool] = []
+
+    def worker() -> None:
+        with Session(engine) as db:
+            barrier.wait(timeout=5.0)
+            delivery = outbox._claim_delivery(
+                db,
+                delivery_id,
+                now=utc_now(),
+                reaction_lane=False,
+            )
+            claimed.append(delivery is not None)
+            if delivery:
+                outbox._deliver_one(db, delivery)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sorted(claimed) == [False, True]
+    assert len(adapter.sent) == 1
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 1
 
 
 @pytest.fixture(autouse=True)

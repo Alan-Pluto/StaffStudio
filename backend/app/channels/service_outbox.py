@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import timedelta
 
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -12,6 +13,7 @@ from app.db.models import (
     ChannelBinding,
     ChannelBindingAgent,
     ChannelDelivery,
+    ChannelInboundEvent,
     ChatSession,
     Message,
     utc_now,
@@ -20,8 +22,69 @@ from app.db.models import (
 logger = logging.getLogger(__name__)
 
 _DELIVERY_BATCH_SIZE = 20
+_REACTION_KINDS = {"reaction_add", "reaction_remove"}
 _delivery_thread: threading.Thread | None = None
+_reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
+_FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
+
+
+def _stage_failed_delivery(
+    db: Session,
+    chat_session: ChatSession,
+    message: Message,
+    *,
+    binding_id: str,
+    target: dict,
+    error: str,
+) -> None:
+    existing = db.exec(
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+    ).first()
+    if existing:
+        return
+    db.add(
+        ChannelDelivery(
+            tenant_id=chat_session.tenant_id,
+            binding_id=binding_id,
+            session_id=chat_session.id,
+            message_id=message.id,
+            target_json=dict(target),
+            kind="reply",
+            text=message.content,
+            status="failed",
+            next_attempt_at=None,
+            last_error=error,
+            idempotency_key=message.id,
+        )
+    )
+
+
+def _immutable_delivery_target(
+    db: Session,
+    binding: ChannelBinding,
+    chat_session: ChatSession,
+    message: Message,
+) -> dict:
+    if binding.channel != "feishu":
+        return dict(chat_session.channel_target_json or {})
+    metadata = message.metadata_json or {}
+    user_message_id = str(metadata.get("user_message_id") or "").strip()
+    user_message = db.get(Message, user_message_id) if user_message_id else None
+    client_turn_id = str(
+        ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
+        or metadata.get("client_turn_id")
+        or ""
+    ).strip()
+    if not client_turn_id:
+        return {}
+    event = db.exec(
+        select(ChannelInboundEvent).where(
+            ChannelInboundEvent.binding_id == binding.id,
+            ChannelInboundEvent.event_id == client_turn_id,
+        )
+    ).first()
+    return dict(event.target_json or {}) if event else {}
 
 
 def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> ChannelBinding | None:
@@ -58,7 +121,7 @@ def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> Ch
 def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Message) -> None:
     """把 assistant 回复登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
 
-    任何异常仅记日志——渠道 staging 绝不能弄挂 web 对话主链路。
+    Web 会话不受渠道 staging 影响；渠道会话必须留下 delivery 或让事务失败。
     """
     try:
         if not getattr(chat_session, "channel", None):
@@ -69,18 +132,26 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         if binding_id:
             binding = db.get(ChannelBinding, binding_id)
             if not binding or binding.status != "active":
+                _stage_failed_delivery(
+                    db,
+                    chat_session,
+                    message,
+                    binding_id=binding_id,
+                    target=dict(chat_session.channel_target_json or {}),
+                    error="binding_missing_or_inactive",
+                )
                 return
             if binding.tenant_id != chat_session.tenant_id or binding.channel != chat_session.channel:
-                return
+                raise RuntimeError("渠道会话与绑定租户或渠道不一致")
             if (
                 not chat_session.channel_account_key
                 or chat_session.channel_account_key != binding.external_account_key
             ):
-                return
+                raise RuntimeError("渠道会话与绑定账号不一致")
         else:
             binding = _find_active_binding_for_agent(db, chat_session)
         if not binding:
-            return
+            raise RuntimeError("渠道会话无法定位有效绑定")
         if not binding_id:
             # 精确恢复成功后持久化归属，后续 staging/delivery 不再走 legacy 分支。
             conflicting_session = db.exec(
@@ -99,17 +170,29 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                     conflicting_session.id,
                     binding.id,
                 )
-                return
+                raise RuntimeError("legacy 渠道会话认领冲突")
             chat_session.channel_binding_id = binding.id
             db.add(chat_session)
             db.flush()
-        target = dict(chat_session.channel_target_json or {})
-        if not target.get("to_user_id") or not target.get("context_token"):
-            return
+        target = _immutable_delivery_target(db, binding, chat_session, message)
         existing = db.exec(
             select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
         ).first()
         if existing:
+            return
+        if binding.channel == "feishu":
+            valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        else:
+            valid_target = bool(target.get("to_user_id") and target.get("context_token"))
+        if not valid_target:
+            _stage_failed_delivery(
+                db,
+                chat_session,
+                message,
+                binding_id=binding.id,
+                target=target,
+                error="delivery_target_missing",
+            )
             return
         db.add(
             ChannelDelivery(
@@ -127,31 +210,223 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         )
     except Exception:
         logger.exception("渠道投递登记失败 session=%s", getattr(chat_session, "id", None))
+        if getattr(chat_session, "channel", None):
+            raise
 
 
-def _deliver_due(db: Session) -> int:
+def _deliver_due(db: Session, *, reaction_lane: bool = False) -> int:
     now = utc_now()
-    due = db.exec(
+    statement = (
         select(ChannelDelivery)
         .where(ChannelDelivery.status == "pending")
         .where(ChannelDelivery.next_attempt_at.is_not(None))
         .where(ChannelDelivery.next_attempt_at <= now)
         .order_by(ChannelDelivery.created_at)
         .limit(_DELIVERY_BATCH_SIZE)
-    ).all()
-    for delivery in due:
+    )
+    if reaction_lane:
+        statement = statement.where(ChannelDelivery.kind.in_(_REACTION_KINDS))
+    else:
+        statement = statement.where(ChannelDelivery.kind.notin_(_REACTION_KINDS))
+    due_ids = db.exec(statement.with_only_columns(ChannelDelivery.id)).all()
+    claimed = 0
+    for delivery_id in due_ids:
+        delivery = _claim_delivery(db, delivery_id, now=now, reaction_lane=reaction_lane)
+        if delivery is None:
+            continue
+        claimed += 1
         _deliver_one(db, delivery)
-    return len(due)
+    return claimed
+
+
+def _claim_delivery(
+    db: Session,
+    delivery_id: str,
+    *,
+    now,
+    reaction_lane: bool,
+) -> ChannelDelivery | None:
+    claim = (
+        update(ChannelDelivery)
+        .where(
+            ChannelDelivery.id == delivery_id,
+            ChannelDelivery.status == "pending",
+            ChannelDelivery.next_attempt_at.is_not(None),
+            ChannelDelivery.next_attempt_at <= now,
+        )
+        .values(
+            status="sending",
+            attempts=ChannelDelivery.attempts + 1,
+            first_attempt_at=func.coalesce(ChannelDelivery.first_attempt_at, now),
+            updated_at=now,
+        )
+    )
+    if reaction_lane:
+        claim = claim.where(ChannelDelivery.kind.in_(_REACTION_KINDS))
+    else:
+        claim = claim.where(ChannelDelivery.kind.notin_(_REACTION_KINDS))
+    result = db.exec(claim)
+    db.commit()
+    if result.rowcount != 1:
+        return None
+    return db.get(ChannelDelivery, delivery_id)
+
+
+def _reaction_event_for_delivery(
+    db: Session,
+    delivery: ChannelDelivery,
+) -> ChannelInboundEvent | None:
+    target = dict(delivery.target_json or {})
+    message_id = str(target.get("message_id") or "").strip()
+    if not message_id:
+        return None
+
+    def valid(event: ChannelInboundEvent | None) -> bool:
+        return bool(
+            event
+            and event.binding_id == delivery.binding_id
+            and event.tenant_id == delivery.tenant_id
+            and event.channel == "feishu"
+            and event.event_id == message_id
+        )
+
+    event_pk = str(target.get("event_pk") or "").strip()
+    event = db.get(ChannelInboundEvent, event_pk) if event_pk else None
+    if event_pk:
+        return event if valid(event) else None
+    return db.exec(
+        select(ChannelInboundEvent).where(
+            ChannelInboundEvent.tenant_id == delivery.tenant_id,
+            ChannelInboundEvent.binding_id == delivery.binding_id,
+            ChannelInboundEvent.channel == "feishu",
+            ChannelInboundEvent.event_id == message_id,
+        )
+    ).first()
+
+
+def _stage_reaction_removal(
+    db: Session,
+    delivery: ChannelDelivery,
+    event: ChannelInboundEvent,
+) -> None:
+    reaction_id = str(event.reaction_id or "").strip()
+    if not reaction_id:
+        return
+    idempotency_key = f"feishu-reaction-remove:{event.id}:{reaction_id}"
+    existing = db.exec(
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == idempotency_key)
+    ).first()
+    if existing:
+        return
+    db.add(
+        ChannelDelivery(
+            tenant_id=delivery.tenant_id,
+            binding_id=delivery.binding_id,
+            session_id=f"event:{event.id}",
+            message_id=None,
+            target_json={
+                "message_id": event.event_id,
+                "event_pk": event.id,
+                "reaction_id": reaction_id,
+            },
+            kind="reaction_remove",
+            text="",
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+def _event_has_delivered_response(
+    db: Session,
+    event: ChannelInboundEvent,
+) -> bool:
+    deliveries = db.exec(
+        select(ChannelDelivery).where(
+            ChannelDelivery.binding_id == event.binding_id,
+            ChannelDelivery.status == "delivered",
+        )
+    ).all()
+    for row in deliveries:
+        if row.kind in _REACTION_KINDS:
+            continue
+        target = row.target_json or {}
+        is_final = row.kind in {"reply", "error_notice"} or bool(
+            target.get("reaction_final")
+        )
+        if is_final and str(target.get("message_id") or "") == event.event_id:
+            return True
+    return False
 
 
 def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
+    from app.channels import binding_lifecycle_lock
+
+    with binding_lifecycle_lock(delivery.binding_id):
+        db.expire(delivery)
+        db.refresh(delivery)
+        if delivery.status != "sending":
+            return
+        _deliver_one_locked(db, delivery)
+
+
+def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     from app.channels.adapters import get_channel_adapter
 
     settings = get_settings()
     binding = db.get(ChannelBinding, delivery.binding_id)
-    if not binding or binding.status != "active":
+    allow_inactive_reaction = bool(
+        binding
+        and binding.channel == "feishu"
+        and binding.credentials_enc
+        and (
+            delivery.kind == "reaction_remove"
+            or (delivery.kind == "reaction_add" and delivery.attempts > 1)
+        )
+    )
+    invalid_binding = (
+        not binding
+        or binding.tenant_id != delivery.tenant_id
+        or (binding.status != "active" and not allow_inactive_reaction)
+    )
+    if invalid_binding:
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
+        delivery.updated_at = utc_now()
+        db.add(delivery)
+        db.commit()
+        return
+    reaction_event = None
+    if delivery.kind in _REACTION_KINDS:
+        if binding.channel != "feishu":
+            delivery.status = "failed"
+            delivery.last_error = "reaction 渠道无效"
+            delivery.next_attempt_at = None
+            delivery.updated_at = utc_now()
+            db.add(delivery)
+            db.commit()
+            return
+        reaction_event = _reaction_event_for_delivery(db, delivery)
+        if not reaction_event:
+            delivery.status = "failed"
+            delivery.last_error = "reaction 事件边界无效"
+            delivery.next_attempt_at = None
+            delivery.updated_at = utc_now()
+            db.add(delivery)
+            db.commit()
+            return
+    if (
+        binding.channel == "feishu"
+        and delivery.kind not in _REACTION_KINDS
+        and delivery.attempts > 0
+        and delivery.first_attempt_at is not None
+        and (utc_now() - delivery.first_attempt_at).total_seconds()
+        > _FEISHU_DEDUP_RECOVERY_SECONDS
+    ):
+        delivery.status = "failed"
+        delivery.last_error = "remote_state_unknown"
+        delivery.next_attempt_at = None
         delivery.updated_at = utc_now()
         db.add(delivery)
         db.commit()
@@ -175,17 +450,61 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
             db.add(delivery)
             db.commit()
             return
-    delivery.status = "sending"
-    delivery.attempts += 1
-    delivery.updated_at = utc_now()
-    db.add(delivery)
-    db.commit()
     try:
         adapter = get_channel_adapter(binding.channel)
-        adapter.send(binding, dict(delivery.target_json or {}), delivery.text)
+        target = dict(delivery.target_json or {})
+        if delivery.kind == "reaction_add":
+            add_reaction = getattr(adapter, "add_reaction", None)
+            if not callable(add_reaction):
+                raise RuntimeError("渠道适配器不支持 reaction")
+            reaction_id = None
+            if delivery.attempts > 1:
+                find_reaction = getattr(adapter, "find_own_reaction", None)
+                if not callable(find_reaction):
+                    raise RuntimeError("渠道适配器不支持 reaction 恢复")
+                reaction_id = find_reaction(
+                    binding,
+                    str(target.get("message_id") or ""),
+                    delivery.text,
+                )
+            if not reaction_id and binding.status == "active":
+                reaction_id = add_reaction(
+                    binding,
+                    str(target.get("message_id") or ""),
+                    delivery.text,
+                )
+            if reaction_id:
+                reaction_event.reaction_id = reaction_id
+                reaction_event.updated_at = utc_now()
+                db.add(reaction_event)
+                if binding.status != "active" or _event_has_delivered_response(
+                    db, reaction_event
+                ):
+                    _stage_reaction_removal(db, delivery, reaction_event)
+        elif delivery.kind == "reaction_remove":
+            remove_reaction = getattr(adapter, "remove_reaction", None)
+            if not callable(remove_reaction):
+                raise RuntimeError("渠道适配器不支持 reaction 清理")
+            remove_reaction(
+                binding,
+                str(target.get("message_id") or ""),
+                str(target.get("reaction_id") or ""),
+            )
+            if reaction_event.reaction_id == str(target.get("reaction_id") or ""):
+                reaction_event.reaction_id = None
+                reaction_event.updated_at = utc_now()
+                db.add(reaction_event)
+        else:
+            adapter.send(
+                binding,
+                target,
+                delivery.text,
+                idempotency_key=delivery.idempotency_key,
+            )
     except Exception as exc:
         delivery.last_error = str(exc)[:500]
-        if delivery.attempts >= settings.channel_delivery_max_attempts:
+        retryable = bool(getattr(exc, "retryable", True))
+        if not retryable or delivery.attempts >= settings.channel_delivery_max_attempts:
             delivery.status = "failed"
             delivery.next_attempt_at = None
         else:
@@ -202,15 +521,108 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     delivery.last_error = None
     delivery.updated_at = utc_now()
     db.add(delivery)
+    if binding.channel == "feishu" and delivery.kind not in _REACTION_KINDS:
+        event = _reaction_event_for_delivery(db, delivery)
+        target = delivery.target_json or {}
+        is_final = delivery.kind in {"reply", "error_notice"} or bool(
+            target.get("reaction_final")
+        )
+        if event and is_final:
+            _stage_reaction_removal(db, delivery, event)
     db.commit()
 
 
-def _reset_stuck_deliveries(db: Session) -> None:
-    stuck = db.exec(select(ChannelDelivery).where(ChannelDelivery.status == "sending")).all()
+def cleanup_feishu_reactions_before_binding_delete(
+    db: Session,
+    binding: ChannelBinding,
+) -> None:
+    """Delete known remote reactions before their binding credentials are removed."""
+    if binding.channel != "feishu":
+        return
+    from app.channels.adapters import get_channel_adapter
+
+    uncertain_adds = db.exec(
+        select(ChannelDelivery).where(
+            ChannelDelivery.tenant_id == binding.tenant_id,
+            ChannelDelivery.binding_id == binding.id,
+            ChannelDelivery.kind == "reaction_add",
+            ChannelDelivery.attempts > 0,
+            ChannelDelivery.status.in_({"pending", "sending", "failed"}),
+        )
+    ).all()
+    adapter = get_channel_adapter("feishu")
+    find_reaction = getattr(adapter, "find_own_reaction", None)
+    remove_reaction = getattr(adapter, "remove_reaction", None)
+    if not callable(find_reaction) or not callable(remove_reaction):
+        raise RuntimeError("飞书适配器不支持 reaction 恢复与清理")
+    event_by_id = {
+        event.id: event
+        for event in db.exec(
+            select(ChannelInboundEvent).where(
+                ChannelInboundEvent.tenant_id == binding.tenant_id,
+                ChannelInboundEvent.binding_id == binding.id,
+                ChannelInboundEvent.channel == "feishu",
+            )
+        ).all()
+    }
+    for delivery in uncertain_adds:
+        event = event_by_id.get(str((delivery.target_json or {}).get("event_pk") or ""))
+        if not event:
+            raise RuntimeError("飞书 reaction 事件边界无效")
+        if event.reaction_id:
+            continue
+        message_id = str((delivery.target_json or {}).get("message_id") or "").strip()
+        if not message_id or message_id != event.event_id:
+            raise RuntimeError("飞书 reaction 事件边界无效")
+        reaction_id = find_reaction(binding, message_id, delivery.text)
+        if reaction_id:
+            remove_reaction(binding, message_id, reaction_id)
+    events = db.exec(
+        select(ChannelInboundEvent).where(
+            ChannelInboundEvent.tenant_id == binding.tenant_id,
+            ChannelInboundEvent.binding_id == binding.id,
+            ChannelInboundEvent.channel == "feishu",
+            ChannelInboundEvent.reaction_id.is_not(None),
+        )
+    ).all()
+    for event in events:
+        reaction_id = str(event.reaction_id or "").strip()
+        if not reaction_id:
+            continue
+        remove_reaction(binding, event.event_id, reaction_id)
+        event.reaction_id = None
+        event.updated_at = utc_now()
+        db.add(event)
+    db.flush()
+
+
+def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None:
+    now = utc_now()
+    statement = select(ChannelDelivery).where(ChannelDelivery.status == "sending")
+    if reaction_lane:
+        statement = statement.where(ChannelDelivery.kind.in_(_REACTION_KINDS))
+    else:
+        statement = statement.where(ChannelDelivery.kind.notin_(_REACTION_KINDS))
+    stuck = db.exec(statement).all()
     for row in stuck:
+        binding = db.get(ChannelBinding, row.binding_id)
+        if (
+            binding
+            and binding.channel == "feishu"
+            and row.kind not in _REACTION_KINDS
+            and row.first_attempt_at is not None
+            and (now - row.first_attempt_at).total_seconds()
+            > _FEISHU_DEDUP_RECOVERY_SECONDS
+        ):
+            row.status = "failed"
+            row.last_error = "remote_state_unknown"
+            row.next_attempt_at = None
+            row.updated_at = now
+            db.add(row)
+            continue
         row.status = "pending"
-        row.next_attempt_at = utc_now()
-        row.updated_at = utc_now()
+        row.next_attempt_at = now
+        row.updated_at = now
         db.add(row)
     if stuck:
         db.commit()
@@ -222,14 +634,43 @@ def run_delivery_daemon(
     poll_seconds: float | None = None,
     db_engine=None,
 ) -> None:
+    _run_delivery_lane(
+        once=once,
+        poll_seconds=poll_seconds,
+        db_engine=db_engine,
+        reaction_lane=False,
+    )
+
+
+def run_reaction_delivery_daemon(
+    *,
+    once: bool = False,
+    poll_seconds: float | None = None,
+    db_engine=None,
+) -> None:
+    _run_delivery_lane(
+        once=once,
+        poll_seconds=poll_seconds,
+        db_engine=db_engine,
+        reaction_lane=True,
+    )
+
+
+def _run_delivery_lane(
+    *,
+    once: bool,
+    poll_seconds: float | None,
+    db_engine,
+    reaction_lane: bool,
+) -> None:
     use_engine = db_engine or engine
     interval = poll_seconds if poll_seconds is not None else get_settings().channel_delivery_poll_seconds
     with Session(use_engine) as db:
-        _reset_stuck_deliveries(db)
+        _reset_stuck_deliveries(db, reaction_lane=reaction_lane)
     while True:
         try:
             with Session(use_engine) as db:
-                _deliver_due(db)
+                _deliver_due(db, reaction_lane=reaction_lane)
         except Exception:
             logger.exception("渠道投递守护轮询失败")
         if once or _delivery_stop.is_set():
@@ -239,26 +680,37 @@ def run_delivery_daemon(
 
 
 def start_delivery_daemon(*, db_engine=None) -> None:
-    global _delivery_thread
-    if _delivery_thread and _delivery_thread.is_alive():
-        return
+    global _delivery_thread, _reaction_delivery_thread
     _delivery_stop.clear()
-    _delivery_thread = threading.Thread(
-        target=run_delivery_daemon,
-        kwargs={"db_engine": db_engine},
-        name="staffdeck-channel-delivery",
-        daemon=True,
-    )
-    _delivery_thread.start()
+    if not (_delivery_thread and _delivery_thread.is_alive()):
+        _delivery_thread = threading.Thread(
+            target=run_delivery_daemon,
+            kwargs={"db_engine": db_engine},
+            name="staffdeck-channel-delivery",
+            daemon=True,
+        )
+        _delivery_thread.start()
+    if not (_reaction_delivery_thread and _reaction_delivery_thread.is_alive()):
+        _reaction_delivery_thread = threading.Thread(
+            target=run_reaction_delivery_daemon,
+            kwargs={"db_engine": db_engine},
+            name="staffdeck-channel-reaction-delivery",
+            daemon=True,
+        )
+        _reaction_delivery_thread.start()
 
 
 def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
-    global _delivery_thread
+    global _delivery_thread, _reaction_delivery_thread
     _delivery_stop.set()
-    thread = _delivery_thread
-    if thread and thread.is_alive():
-        thread.join(timeout=max(0.0, timeout_seconds))
-    stopped = not (thread and thread.is_alive())
+    threads = [_delivery_thread, _reaction_delivery_thread]
+    deadline = utc_now() + timedelta(seconds=max(0.0, timeout_seconds))
+    for thread in threads:
+        if thread and thread.is_alive():
+            remaining = max(0.0, (deadline - utc_now()).total_seconds())
+            thread.join(timeout=remaining)
+    stopped = not any(thread and thread.is_alive() for thread in threads)
     if stopped:
         _delivery_thread = None
+        _reaction_delivery_thread = None
     return stopped
