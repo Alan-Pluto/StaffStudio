@@ -58,24 +58,24 @@ npm --prefix frontend-enterprise run build
 
 echo "==> [2/5] 后端 venv + 运行依赖 + 打包工具"
 cd backend
-if [ ! -x ".venv/bin/pyinstaller" ]; then
-  # 若无 venv（如 CI 全新 checkout），自建并装运行依赖
-  if [ ! -x ".venv/bin/python" ]; then
-    python3 -m venv .venv
-    .venv/bin/python -m ensurepip --upgrade 2>/dev/null || true
-  fi
-  # 装运行依赖（从 pyproject 提取；本项目不 editable 安装）
-  if .venv/bin/python -m pip --version >/dev/null 2>&1; then
-    DEPS="$(.venv/bin/python -c "import tomllib,pathlib; print(' '.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))")"
-    .venv/bin/python -m pip install -U pip
-    .venv/bin/python -m pip install $DEPS "pyinstaller>=6.6.0" "certifi>=2024.2.2"
-  elif command -v uv >/dev/null 2>&1; then
-    # 本机 venv 由 uv 管理、无 pip：用 uv pip 补装打包工具（运行依赖已在 venv 中）
-    VIRTUAL_ENV="$(pwd)/.venv" uv pip install "pyinstaller>=6.6.0" "certifi>=2024.2.2"
-  else
-    echo "无法安装打包依赖：venv 既无 pip 也无 uv" >&2
-    exit 1
-  fi
+if [ ! -x ".venv/bin/python" ]; then
+  python3 -m venv .venv
+  .venv/bin/python -m ensurepip --upgrade 2>/dev/null || true
+fi
+# 每次打包都重新对齐 pyproject 约束。仅在 pyinstaller 缺失时安装会让旧
+# .venv 绕过 cryptography/OpenSSL 兼容修复，产出不可重现的发布包。
+DEPS="$(.venv/bin/python -c "import tomllib,pathlib; print(' '.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))")"
+if .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  .venv/bin/python -m pip install -U pip
+  # DEPS 由 pyproject 的依赖数组生成，需要按 shell 参数拆分。
+  # shellcheck disable=SC2086
+  .venv/bin/python -m pip install $DEPS "pyinstaller>=6.6.0" "certifi>=2024.2.2"
+elif command -v uv >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  VIRTUAL_ENV="$(pwd)/.venv" uv pip install $DEPS "pyinstaller>=6.6.0" "certifi>=2024.2.2"
+else
+  echo "无法安装打包依赖：venv 既无 pip 也无 uv" >&2
+  exit 1
 fi
 # macOS Dock 壳依赖 pyobjc（幂等，已装则跳过）
 if ! .venv/bin/python -c "import AppKit" >/dev/null 2>&1; then
@@ -110,6 +110,10 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "警告：密封校验未过，双击可能无法打开"
 fi
+
+# 在当前 runner 的原生架构上真正启动 PyInstaller App。Intel CI 会在这里
+# 捕获 cryptography/OpenSSL ABI 错配，而不是到用户机器上才发现。
+bash packaging/smoke_macos_app.sh "$APP"
 
 DMG="packaging/out/StaffDeck-macos-${ARCH}.dmg"
 DMG_ROOT="packaging/out/dmg-root"
