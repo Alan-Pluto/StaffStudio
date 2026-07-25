@@ -74,6 +74,25 @@ def test_compact_step_result_only_projects_knowledge_results() -> None:
     ) <= 803
 
 
+def test_compact_knowledge_context_keeps_complete_related_group() -> None:
+    evidence = [
+        {
+            "chunk_id": f"chunk_{index}",
+            "related_group_id": "faq_group",
+            "section_path": "示例流程 / 办理步骤",
+            "content": f"第 {index} 段内容",
+        }
+        for index in range(1, 9)
+    ]
+
+    compacted = compact_knowledge_context([{"evidence_pack": evidence}])
+
+    knowledge = compacted[0]["retrieved_knowledge"]
+    assert len(knowledge) == 1
+    assert "第 1 段内容" in knowledge[0]["content"]
+    assert "第 8 段内容" in knowledge[0]["content"]
+
+
 def test_compact_conversation_context_keeps_recent_history_within_control_budget() -> None:
     context = {
         "messages": [
