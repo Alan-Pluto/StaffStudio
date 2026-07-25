@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -64,8 +65,10 @@ def _extract_pdf(content: bytes) -> str:
     for index, page in enumerate(reader.pages):
         page_text = page.extract_text() or ""
         if page_text.strip():
-            pages.append(f"[Page {index + 1}]\n{page_text}")
-    return "\n\n".join(pages)
+            pages.append(f"## 第 {index + 1} 页\n\n{page_text}")
+    if not pages:
+        return ""
+    return "# PDF 文档\n\n" + "\n\n".join(pages)
 
 
 def _extract_docx(content: bytes) -> str:
@@ -73,7 +76,13 @@ def _extract_docx(content: bytes) -> str:
         from docx import Document
 
         document = Document(BytesIO(content))
-        rows = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        rows: list[str] = []
+        for paragraph in document.paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            heading_level = _docx_heading_level(paragraph.style.name if paragraph.style else "")
+            rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
         for table in document.tables:
             for row in table.rows:
                 cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
@@ -82,6 +91,11 @@ def _extract_docx(content: bytes) -> str:
         return "\n".join(rows)
     except Exception:
         return _extract_docx_with_zip(content)
+
+
+def _docx_heading_level(style_name: str) -> int | None:
+    match = re.match(r"^(?:Heading|标题)\s*([1-6])$", style_name.strip(), re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _extract_docx_with_zip(content: bytes) -> str:
