@@ -31,6 +31,7 @@ from app.capabilities.registry import (
     CapabilitySnapshot,
     DurableCapabilityBinding,
 )
+from app.capabilities.testkit import ContractViolation
 
 __all__ = [
     "CapabilityBinding",
@@ -40,6 +41,7 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilitySnapshot",
     "CitationDetail",
+    "ContractViolation",
     "DurableCapabilityBinding",
     "GeneralSkillCatalog",
     "GeneralSkillExecutionRequest",
