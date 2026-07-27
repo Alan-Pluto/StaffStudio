@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from sqlmodel import Session, select
 
+from app.channels.service_identity import channel_label
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
@@ -15,15 +16,21 @@ from app.db.models import (
 
 COMMAND_PREFIX = "/"
 
-HELP_TEXT = (
-    "可用指令：\n"
-    "/员工 查看可调度员工列表\n"
-    "/切换 <名字> 切换到指定员工\n"
-    "/当前 查看当前员工\n"
-    "/绑定 <绑定码> 把微信绑定到你的 StaffDeck 账号\n"
-    "/解绑 解除微信与 StaffDeck 账号的绑定\n"
-    "/帮助 查看本说明"
-)
+def help_text(channel: str) -> str:
+    label = channel_label(channel)
+    return (
+        "可用指令：\n"
+        "/员工 查看可调度员工列表\n"
+        "/切换 <名字> 切换到指定员工\n"
+        "/当前 查看当前员工\n"
+        f"/绑定 <绑定码> 把{label}账号绑定到你的 StaffDeck 账号\n"
+        f"/解绑 解除{label}账号与 StaffDeck 账号的绑定\n"
+        "/帮助 查看本说明"
+    )
+
+
+# 兼容仍直接引用常量的微信测试和调用方；运行时回复使用 binding.channel 动态生成。
+HELP_TEXT = help_text("wechat")
 
 
 @dataclass
@@ -217,4 +224,4 @@ def run_command(db: Session, binding: ChannelBinding, external_conv_id: str, cmd
             db, binding, external_conv_id, target.agent_id, pin_until=utc_now() + timedelta(minutes=10)
         )
         return f"已切换到「{target_name}」，后续消息由 TA 回复。上下文各自独立，输入 /员工 查看列表。"
-    return HELP_TEXT
+    return help_text(binding.channel)

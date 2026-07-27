@@ -515,7 +515,10 @@ def test_bind_success_migrates_history_and_marks_code_used() -> None:
     assert process_inbound(binding, _p2p_message("evt_b1", "/绑定 123456"), db_engine=engine) is False
 
     notices = _notice_texts(engine)
-    assert any("绑定成功" in text and "「张三」" in text for text in notices)
+    assert any(
+        "绑定成功，微信对话将与你的 StaffDeck 账号「张三」共享记忆与对话记录。" == text
+        for text in notices
+    )
 
     with Session(engine) as db:
         identity = db.exec(select(ChannelIdentity)).one()
@@ -969,7 +972,10 @@ def test_wecom_bind_success_full_chain() -> None:
     assert process_inbound(binding, _wecom_inbound("evt_wb1", "/绑定 123456"), db_engine=engine) is False
 
     notices = _notice_texts(engine)
-    assert any("绑定成功" in text and "「张三」" in text for text in notices)
+    assert any(
+        "绑定成功，企业微信对话将与你的 StaffDeck 账号「张三」共享记忆与对话记录。" == text
+        for text in notices
+    )
 
     with Session(engine) as db:
         identity = db.exec(select(ChannelIdentity)).one()

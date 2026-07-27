@@ -812,7 +812,7 @@ def test_wecom_p2p_inbound_full_chain() -> None:
         assert chat_session.channel_binding_id == binding_id
         user = db.get(User, chat_session.user_id)
         assert user.username == channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1")
-        assert user.display_name == "企微用户 zhangsan"
+        assert user.display_name == "企业微信用户 zhangsan"
         assert user.source == "wecom"
         event = db.exec(select(ChannelInboundEvent)).one()
         assert event.status == "done"

@@ -628,7 +628,8 @@ def _bind_external_identity(
         _migrate_sessions(db, binding, from_user_id=old_user_id, to_user=owner)
         _migrate_memories(db, from_user_id=old_user_id, to_user=owner)
     display = owner.display_name or owner.username
-    return f"绑定成功，微信对话将与你的 StaffDeck 账号「{display}」共享记忆与对话记录。"
+    label = channel_label(binding.channel)
+    return f"绑定成功，{label}对话将与你的 StaffDeck 账号「{display}」共享记忆与对话记录。"
 
 
 def _unbind_external_identity(
@@ -640,10 +641,11 @@ def _unbind_external_identity(
     current = unbind_external_identity(
         db, binding.tenant_id, binding.channel, inbound.from_user_id, scope
     )
+    label = channel_label(binding.channel)
     if not current:
-        return "当前微信未绑定 StaffDeck 账号，无需解绑。"
+        return f"当前{label}账号未绑定 StaffDeck 账号，无需解绑。"
     display = current.display_name or current.username
-    return f"已解绑 StaffDeck 账号「{display}」，后续对话将使用独立的微信访客身份。"
+    return f"已解绑 StaffDeck 账号「{display}」，后续对话将使用独立的{label}访客身份。"
 
 
 def _send_wechat_typing(

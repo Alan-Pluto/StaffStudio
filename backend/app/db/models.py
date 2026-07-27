@@ -601,7 +601,7 @@ class ChannelConvState(SQLModel, table=True):
 
 
 class ChannelBindCode(SQLModel, table=True):
-    """微信身份自助绑定码:网页端生成,微信侧 /绑定 <码> 核销。"""
+    """渠道身份自助绑定码:网页端生成,渠道侧 /绑定 <码> 核销。"""
 
     __tablename__ = "channel_bind_codes"
     __table_args__ = (

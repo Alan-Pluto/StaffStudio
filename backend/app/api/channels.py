@@ -320,7 +320,7 @@ def create_bind_code(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> ChannelBindCodeRead:
-    """为当前用户生成微信身份绑定码(6 位数字,10 分钟有效,旧码作废)。"""
+    """为当前用户生成渠道身份绑定码(6 位数字,10 分钟有效,旧码作废)。"""
     ensure_current_user_tenant(tenant_id, current_user)
     if not _check_bind_code_rate(current_user.id):
         raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")

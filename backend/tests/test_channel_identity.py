@@ -2,6 +2,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.channels.service_identity import (
+    channel_label,
     channel_username,
     external_account_key,
     external_identity_for_message,
@@ -23,6 +24,12 @@ def _test_engine():
 def _seed_tenant(db: Session) -> None:
     db.add(Tenant(id="tenant_demo", name="Demo"))
     db.commit()
+
+
+def test_channel_labels_use_canonical_names() -> None:
+    assert channel_label("wechat") == "微信"
+    assert channel_label("wecom") == "企业微信"
+    assert channel_label("feishu") == "飞书"
 
 
 def test_external_identity_for_p2p_and_group() -> None:

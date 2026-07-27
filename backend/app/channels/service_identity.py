@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 _USERNAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.@-]")
 
-# 渠道显示名前缀(懒建账号 display_name 用)
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企微", "feishu": "飞书"}
+# 渠道显示名前缀(用户回复与懒建账号 display_name 共用)
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书"}
 
 
 class IdentityScopeConflict(RuntimeError):
