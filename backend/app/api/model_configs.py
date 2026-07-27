@@ -274,9 +274,6 @@ def test_model_config(
                 raise LLMError("MODEL_VERIFICATION_DEADLINE_EXCEEDED")
             probe_config = replace(
                 config,
-                max_output_tokens=_verification_probe_tokens(
-                    config.api_protocol, capability_id, max_tokens
-                ),
                 timeout_seconds=min(probe_timeout, remaining),
             )
             probe_client = LLMClient(probe_config)
