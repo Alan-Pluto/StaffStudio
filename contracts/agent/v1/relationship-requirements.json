@@ -32,6 +32,16 @@
       ]
     },
     {
+      "id": "legacy.feedback-target-message-identity",
+      "kind": "join",
+      "rule_id": "legacy.feedback_target_identity",
+      "references": [
+        {"role": "conversation_assistant_message_id", "plane": "conversation", "pointer_pattern": "/messages/*/id", "qualifier": {"levels_up": 1, "relative_pointer": "/role", "equals": "assistant"}},
+        {"role": "action_feedback_target_id", "plane": "conversation", "pointer_pattern": "/interaction_checks/*/action_result/resource_id", "qualifier": {"levels_up": 2, "relative_pointer": "/kind", "equals": "feedback"}},
+        {"role": "feedback_response_message_id", "plane": "conversation", "pointer_pattern": "/interaction_checks/*/action_result/persisted_state/up_response/message_id", "qualifier": {"levels_up": 4, "relative_pointer": "/kind", "equals": "feedback"}}
+      ]
+    },
+    {
       "id": "legacy.db-user-before-assistant",
       "kind": "happens_before",
       "rule_id": "legacy.observed_event_order",
@@ -82,6 +92,16 @@
         {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
         {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"},
         {"kind": "happens_before", "plane": "sse", "name": "user-event-before-complete", "profile_id": "legacy.sse-user-before-complete"}
+      ]
+    },
+    {
+      "fixture_set": "legacy_characterization",
+      "variant_id": "GT01-feedback-refresh-toggle",
+      "relations": [
+        {"kind": "join", "plane": "domain", "name": "user-turn-message-identity", "profile_id": "legacy.user-turn-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
+        {"kind": "join", "plane": "conversation", "name": "feedback-target-message-identity", "profile_id": "legacy.feedback-target-message-identity"},
+        {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"}
       ]
     },
     {

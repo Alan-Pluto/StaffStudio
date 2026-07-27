@@ -130,7 +130,29 @@ def test_declared_normalization_profile_drives_precise_resource_id_paths() -> No
                     "id": "message-runtime",
                     "metadata": {"attachments": [{"id": "file-runtime"}]},
                 }
-            ]
+            ],
+            "interaction_checks": [
+                {
+                    "kind": "feedback",
+                    "action_result": {
+                        "resource_id": "message-runtime",
+                        "persisted_state": {
+                            "up_response": {
+                                "id": "feedback-runtime",
+                                "message_id": "message-runtime",
+                            }
+                        },
+                    }
+                },
+                {
+                    "kind": "scheduled_draft",
+                    "action_result": {"resource_id": "scheduled-task-draft"},
+                },
+                {
+                    "kind": "attachment",
+                    "action_result": {"resource_id": "golden-notes.txt"},
+                },
+            ],
         },
         "unrelated": {"id": "business-stable-id"},
     }
@@ -141,10 +163,17 @@ def test_declared_normalization_profile_drives_precise_resource_id_paths() -> No
 
     request = normalized["domain"]["request"]
     assert request["session_id"] == request["source_session_id"]
-    assert request["attachments"][0]["id"] == normalized["conversation"]["messages"][
-        0
-    ]["metadata"]["attachments"][0]["id"]
+    assert (
+        request["attachments"][0]["id"]
+        == normalized["conversation"]["messages"][0]["metadata"]["attachments"][0]["id"]
+    )
     assert normalized["unrelated"]["id"] == "business-stable-id"
+    action_result = normalized["conversation"]["interaction_checks"][0]["action_result"]
+    assert action_result["resource_id"] == normalized["conversation"]["messages"][0]["id"]
+    assert action_result["persisted_state"]["up_response"]["id"] != "feedback-runtime"
+    interaction_checks = normalized["conversation"]["interaction_checks"]
+    assert interaction_checks[1]["action_result"]["resource_id"] == "scheduled-task-draft"
+    assert interaction_checks[2]["action_result"]["resource_id"] == "golden-notes.txt"
 
 
 def test_order_time_and_duration_guards_reject_masked_regressions() -> None:

@@ -85,12 +85,13 @@ class CanonicalNormalizer:
         self,
         *,
         rfc3339_timestamps: bool = False,
-        rules: Sequence[Mapping[str, str]] | None = None,
+        rules: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         self._ids: dict[str, str] = {}
         self._times: dict[str, str] = {}
         self._rfc3339_timestamps = rfc3339_timestamps
         self._rules = list(rules) if rules is not None else None
+        self._source: Any = None
 
     @classmethod
     def from_profile(
@@ -117,6 +118,7 @@ class CanonicalNormalizer:
         return cls(rfc3339_timestamps=rfc3339_timestamps, rules=rules)
 
     def normalize(self, value: Any) -> Any:
+        self._source = value
         self._register_times(value)
         return self._normalize(deepcopy(value), key=None, path=())
 
@@ -169,6 +171,7 @@ class CanonicalNormalizer:
                     rule["strategy"]
                     for rule in self._rules
                     if self._path_matches(rendered, rule["match"])
+                    and self._qualifier_matches(path, rule.get("qualifier"))
                 ),
                 None,
             )
@@ -196,6 +199,25 @@ class CanonicalNormalizer:
         expression = expression.replace(r"\*", r"[^.\[]+")
         expression = expression.replace("__RECURSIVE__", ".*")
         return re.fullmatch(expression, path) is not None
+
+    def _qualifier_matches(
+        self,
+        path: tuple[str | int, ...],
+        qualifier: Any,
+    ) -> bool:
+        if qualifier is None:
+            return True
+        levels_up = qualifier["levels_up"]
+        if levels_up > len(path):
+            return False
+        container = self._source
+        for token in path[:-levels_up]:
+            container = container[token]
+        try:
+            actual = resolve_json_pointer(container, qualifier["relative_pointer"])
+        except AssertionError:
+            return False
+        return actual == qualifier["equals"]
 
     @staticmethod
     def _is_contextual_id_path(path: tuple[str | int, ...]) -> bool:

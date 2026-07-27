@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
   "scenario_id": "GT01",
-  "variant_id": "GT01-sync",
+  "variant_id": "GT01-feedback-refresh-toggle",
   "plane": "conversation",
   "applicability": "required",
   "payload_schema": "planes/conversation.schema.json",
@@ -46,8 +46,30 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:e98599e89eaa04cf73d2a53e19123fa08c68c4c4371e5183891273b6158f3240",
-  "joins": [],
+  "content_hash": "sha256:586ca2e5204c5fe80775178b09ffaedc85b39da9db515683aa92a75da702b354",
+  "joins": [
+    {
+      "name": "feedback-target-message-identity",
+      "rule_id": "legacy.feedback_target_identity",
+      "references": [
+        {
+          "role": "conversation_assistant_message_id",
+          "plane": "conversation",
+          "pointer": "/messages/1/id"
+        },
+        {
+          "role": "action_feedback_target_id",
+          "plane": "conversation",
+          "pointer": "/interaction_checks/0/action_result/resource_id"
+        },
+        {
+          "role": "feedback_response_message_id",
+          "plane": "conversation",
+          "pointer": "/interaction_checks/0/action_result/persisted_state/up_response/message_id"
+        }
+      ]
+    }
+  ],
   "happens_before": [],
   "payload": {
     "sync_response": {
@@ -88,7 +110,7 @@
         "tenant_id": "tenant_golden",
         "user_id": "user_golden",
         "agent_id": "agent_golden",
-        "title": "你好，请介绍一下自己",
+        "title": "请回复后接受评价",
         "active_skill_id": null,
         "active_step_id": null,
         "slots": {},
@@ -106,9 +128,9 @@
         "tenant_id": "tenant_golden",
         "session_id": "<id:0002>",
         "role": "user",
-        "content": "你好，请介绍一下自己。",
+        "content": "请回复后接受评价。",
         "metadata": {
-          "client_turn_id": "client-gt01-sync"
+          "client_turn_id": "client-feedback"
         },
         "turn_id": "<id:0001>",
         "created_at": "2000-01-01T00:00:00.002Z",
@@ -134,7 +156,7 @@
       "tenant_id": "tenant_golden",
       "user_id": "user_golden",
       "agent_id": "agent_golden",
-      "title": "你好，请介绍一下自己",
+      "title": "请回复后接受评价",
       "active_skill_id": null,
       "active_step_id": null,
       "status": "active",
@@ -146,10 +168,57 @@
     },
     "interaction_checks": [
       {
-        "kind": "none",
+        "kind": "feedback",
         "realtime_observation": "not_observed",
-        "refresh_observation": "not_observed",
-        "action_result": null
+        "refresh_observation": "history_payload_observed",
+        "action_result": {
+          "evidence_id": "feedback-up-invalid-clear",
+          "evidence_origin": "harness_synthetic",
+          "resource_id": "<id:0003>",
+          "action": "rate_up_reject_invalid_clear",
+          "request": {
+            "set_rating": "up",
+            "invalid_rating": "invalid",
+            "clear": true
+          },
+          "response_status": 200,
+          "persisted_state": {
+            "initial_rating": null,
+            "up_status": 200,
+            "up_response": {
+              "id": "<id:0009>",
+              "tenant_id": "tenant_golden",
+              "session_id": "<id:0002>",
+              "message_id": "<id:0003>",
+              "rating": "up",
+              "analysis_status": "pending",
+              "updated_at": "2000-01-01T00:00:00.008Z"
+            },
+            "rating_after_up_refresh": "up",
+            "invalid_status": 422,
+            "invalid_response": {
+              "detail": [
+                {
+                  "type": "literal_error",
+                  "loc": [
+                    "body",
+                    "rating"
+                  ],
+                  "msg": "Input should be 'up' or 'down'",
+                  "input": "invalid",
+                  "ctx": {
+                    "expected": "'up' or 'down'"
+                  }
+                }
+              ]
+            },
+            "rating_after_invalid_refresh": "up",
+            "clear_response": {
+              "status": "deleted"
+            },
+            "rating_after_clear_refresh": null
+          }
+        }
       }
     ]
   }

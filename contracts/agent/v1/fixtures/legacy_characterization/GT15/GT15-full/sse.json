@@ -9,15 +9,15 @@
   "normalization_profile": "agent-golden-v1",
   "source": {
     "kind": "captured_runtime",
-    "repo_revision": "6c6594d42c08ae3757a72aa0e654a3fe555e4077",
+    "repo_revision": "c7fc448da7776c184d43865db392005819dc3b8f",
     "artifacts": [
       {
         "path": "backend/tests/agent_golden/fixture_writer.py",
-        "sha256": "sha256:2142c79df0157a7e799a261dbd07196e045640befc550f0d252e10cbcc57833a"
+        "sha256": "sha256:8e1b665180de6ca67c8df40550ee03bed57bd0bb310ca52a8cdc92049345939f"
       },
       {
         "path": "backend/tests/agent_golden/legacy_scenario_capture.py",
-        "sha256": "sha256:abdd3e6f8c37fc756b3ce30026b0883dad638276fdd7068e8b85256887988a46"
+        "sha256": "sha256:cb62e624befd3fc3b57692fe4740b3ae8e902f66e2e1e9bf1f295ffd0dc43c74"
       },
       {
         "path": "backend/tests/agent_golden/harness.py",
@@ -25,7 +25,7 @@
       },
       {
         "path": "backend/tests/agent_golden/support.py",
-        "sha256": "sha256:e3340322640c70fd35ad0999b31ec0ac8584453301f8f99f0cc768b6ef63e999"
+        "sha256": "sha256:dc35bef1b0256844800b6398aa667f08627f1116b768bc710a010331e71c0b94"
       },
       {
         "path": "backend/tests/agent_golden/scripted_dependencies.py",
@@ -33,7 +33,7 @@
       },
       {
         "path": "contracts/agent/v1/normalization-profiles.json",
-        "sha256": "sha256:79323752976e1cde514dd0b912351c337d126ac32330f7767c1eea6a13aa4256"
+        "sha256": "sha256:12190f7fbc7cef27f8ad4341952cfb46f5a775e28da16529045a2d7dc7ac3bcd"
       },
       {
         "path": "contracts/agent/v1/scenario-catalog.json",

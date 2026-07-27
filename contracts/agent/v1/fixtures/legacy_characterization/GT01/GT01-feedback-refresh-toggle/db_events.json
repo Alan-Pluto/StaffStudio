@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
   "scenario_id": "GT01",
-  "variant_id": "GT01-sync",
+  "variant_id": "GT01-feedback-refresh-toggle",
   "plane": "db_events",
   "applicability": "required",
   "payload_schema": "planes/db-events.schema.json",
@@ -46,7 +46,7 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:adf2074a09dd4748550b34c0f9e7cda9cccb1c630e68674cbe8acbf20af44279",
+  "content_hash": "sha256:a2212ad67cdb29c62771e8a86ca3a72aa379f4285260fc967fdca3a2c19c1dfc",
   "joins": [],
   "happens_before": [
     {
@@ -76,8 +76,8 @@
         "created_at": "2000-01-01T00:00:00.003Z",
         "payload": {
           "message_id": "<id:0001>",
-          "client_turn_id": "client-gt01-sync",
-          "message": "你好，请介绍一下自己。",
+          "client_turn_id": "client-feedback",
+          "message": "请回复后接受评价。",
           "channel": "web",
           "user_id": "user_golden",
           "turn_id": "<id:0001>",
@@ -97,7 +97,7 @@
           "reply": "这是 Golden 测试的稳定回复。",
           "user_message_id": "<id:0001>",
           "turn_id": "<id:0001>",
-          "client_turn_id": "client-gt01-sync"
+          "client_turn_id": "client-feedback"
         }
       },
       {
@@ -112,7 +112,7 @@
           "tenant_id": "tenant_golden",
           "user_id": "user_golden",
           "agent_id": "agent_golden",
-          "title": "你好，请介绍一下自己",
+          "title": "请回复后接受评价",
           "active_skill_id": null,
           "active_step_id": null,
           "slots": {},
@@ -124,7 +124,33 @@
           "status": "active",
           "turn_id": "<id:0001>",
           "user_message_id": "<id:0001>",
-          "client_turn_id": "client-gt01-sync"
+          "client_turn_id": "client-feedback"
+        }
+      },
+      {
+        "observed_row_order": 3,
+        "event_id": "<id:0007>",
+        "event_type": "message_feedback_changed",
+        "tenant_id": "tenant_golden",
+        "session_id": "<id:0002>",
+        "created_at": "2000-01-01T00:00:00.009Z",
+        "payload": {
+          "message_id": "<id:0003>",
+          "rating": "up",
+          "user_id": "user_golden"
+        }
+      },
+      {
+        "observed_row_order": 4,
+        "event_id": "<id:0008>",
+        "event_type": "message_feedback_changed",
+        "tenant_id": "tenant_golden",
+        "session_id": "<id:0002>",
+        "created_at": "2000-01-01T00:00:00.010Z",
+        "payload": {
+          "message_id": "<id:0003>",
+          "rating": null,
+          "user_id": "user_golden"
         }
       }
     ]

@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
   "scenario_id": "GT01",
-  "variant_id": "GT01-sse",
+  "variant_id": "GT01-feedback-refresh-toggle",
   "plane": "domain",
   "applicability": "required",
   "payload_schema": "planes/domain.schema.json",
@@ -46,7 +46,7 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:098b421088548e63b09391f50a3270de86a67163d055dd5595e1f4875c27d3a7",
+  "content_hash": "sha256:bd332fd982a1a5d2705dcd3fc1719e6f50e16dcecfcb648a2044379eb35d9168",
   "joins": [
     {
       "name": "user-turn-message-identity",
@@ -60,7 +60,7 @@
         {
           "role": "db_user_message_id",
           "plane": "db_events",
-          "pointer": "/events/1/payload/message_id"
+          "pointer": "/events/0/payload/message_id"
         },
         {
           "role": "conversation_user_message_id",
@@ -81,7 +81,7 @@
         {
           "role": "db_assistant_message_id",
           "plane": "db_events",
-          "pointer": "/events/7/payload/message_id"
+          "pointer": "/events/1/payload/message_id"
         },
         {
           "role": "conversation_assistant_message_id",
@@ -96,8 +96,8 @@
     "request": {
       "tenant_id": "tenant_golden",
       "agent_id": "agent_golden",
-      "message": "你好，请流式回复。",
-      "client_turn_id": "client-gt01-sse",
+      "message": "请回复后接受评价。",
+      "client_turn_id": "client-feedback",
       "turn_id": "<id:0001>"
     },
     "router_decision": {
@@ -108,7 +108,7 @@
       "confidence": 0.0,
       "user_intent": null,
       "general_intent": null,
-      "reason": "No published scene skills are available; answer as chat.",
+      "reason": "No published scene skills are available; try general skills, then answer as chat.",
       "source_message": null,
       "clarification_question": null,
       "slot_hints": {},
@@ -135,7 +135,16 @@
       "session_id": "<id:0002>",
       "assistant_message_id": "<id:0003>"
     },
-    "facts": [],
-    "termination": "complete"
+    "facts": [
+      {
+        "kind": "feedback_history_lifecycle",
+        "assistant_message_id": "<id:0003>",
+        "db_event_types": [
+          "message_feedback_changed",
+          "message_feedback_changed"
+        ]
+      }
+    ],
+    "termination": "sync_response"
   }
 }

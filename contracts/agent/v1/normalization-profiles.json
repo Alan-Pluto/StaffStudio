@@ -28,6 +28,8 @@
         {"match": "$.db_events.events[*].payload.attachments[*].id", "strategy": "identity_map"},
         {"match": "$.conversation.messages[*].metadata.attachments[*].id", "strategy": "identity_map"},
         {"match": "$.conversation.interaction_checks[*].action_result.persisted_state.attachment.id", "strategy": "identity_map"},
+        {"match": "$.conversation.interaction_checks[*].action_result.resource_id", "strategy": "identity_map", "qualifier": {"levels_up": 2, "relative_pointer": "/kind", "equals": "feedback"}},
+        {"match": "$.conversation.interaction_checks[*].action_result.persisted_state.up_response.id", "strategy": "identity_map"},
         {"match": "$.conversation.messages[*].metadata.scheduled_task_created.id", "strategy": "identity_map"},
         {"match": "**.timestamp", "strategy": "monotonic_time_map"},
         {"match": "**.*_at", "strategy": "monotonic_time_map"},

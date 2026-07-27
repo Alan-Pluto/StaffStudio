@@ -3,30 +3,30 @@
   "contract_version": "agent/v1",
   "phase_scope": "0A",
   "source_revision": "6c6594d42c08ae3757a72aa0e654a3fe555e4077",
-  "generated_at": "2026-07-27T04:24:04Z",
-  "environment": {"status": "contract_and_legacy_characterization_in_progress", "database": "real_file_sqlite_six_variants_plus_isolated_browser_sqlite", "frontend": "vitest_build_and_loopback_browser_characterization_partial"},
+  "generated_at": "2026-07-27T06:09:14Z",
+  "environment": {"status": "contract_and_legacy_characterization_in_progress", "database": "real_file_sqlite_seven_variants_plus_isolated_browser_sqlite", "frontend": "vitest_build_and_loopback_browser_characterization_partial"},
   "gate_decision": "no_go",
   "gate_reasons": [
-    "Required Legacy five-plane fixtures exist for 6 of 27 scenario variants; remaining variants are incomplete.",
-    "Target-v1 runtime conformance and success-terminal live History visibility coverage are not implemented.",
+    "Required Legacy five-plane fixtures exist for 7 of 27 scenario variants; remaining variants are incomplete.",
+    "Target-v1 runtime conformance is not implemented; the automated success-terminal probe is limited to GT01 plain chat.",
     "Browser characterization found a mobile layout failure; automated desktop replay, feedback rollback, Citation, Handoff, and Scheduled Draft confirmation remain uncovered."
   ],
   "runtime_conformance": "not_implemented",
   "legacy_characterization_status": "in_progress",
   "schema_validation_results": [{"id": "machine_contract_schemas", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "All 21 Draft 2020-12 schemas and 12 registered instances passed backend/tests/agent_golden; manifest orphan/duplicate checks, owned payload path resolution, recursive forbidden-key checks, and manifest-pinned Legacy field observations also passed."}],
   "scenario_plane_results": [
-    {"id": "captured_legacy_variants", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "GT01 sync/SSE, GT02 ask-refresh-continue, GT13 LLM error, GT15 full, and GT16 History have 30 checked-in five-plane envelopes and independent runtime recapture."},
-    {"id": "remaining_GT01-GT17_variants", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Five-plane fixture envelopes remain missing for 21 of 27 catalog variants."}
+    {"id": "captured_legacy_variants", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "GT01 sync/SSE/feedback-refresh-toggle, GT02 ask-refresh-continue, GT13 LLM error, GT15 full, and GT16 History have 35 checked-in five-plane envelopes and independent runtime recapture."},
+    {"id": "remaining_GT01-GT17_variants", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Five-plane fixture envelopes remain missing for 20 of 27 catalog variants."}
   ],
   "requirement_coverage": {"status": "incomplete", "covered": 0, "required": 29, "missing": ["runtime_assertions"]},
   "vocabulary_coverage": {"status": "complete", "covered": 1, "required": 1, "missing": []},
   "join_invariant_results": [
-    {"id": "captured_legacy_cross_plane_joins", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Required per-variant relationships, profile-pinned endpoint roles/path patterns/semantic qualifiers, unique non-self references, durable SSE-to-DB event_id joins, and attachment request-to-History joins pass for all six captured variants."},
+    {"id": "captured_legacy_cross_plane_joins", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Required per-variant relationships, profile-pinned endpoint roles/path patterns/semantic qualifiers, unique non-self references, durable SSE-to-DB event_id joins, feedback target-to-History/API-response joins, and attachment request-to-History joins pass for all seven captured variants."},
     {"id": "remaining_legacy_cross_plane_joins", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Join evidence remains absent for uncaptured variants."}
   ],
   "happens_before_results": [
     {"id": "GT13_error_boundary_visibility", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "A real loopback socket probe observes user-only History at error_occurred and assistant History visibility by stream_end, followed by clean close without complete."},
-    {"id": "success_terminal_visibility", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "A live socket probe of successful terminal SSE against concurrently readable committed History is still required."}
+    {"id": "success_terminal_visibility", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "A deterministic commit-barrier probe over loopback Uvicorn proves GT01 plain-chat stream_end precedes commit, complete is absent while commit is blocked, and the non-empty durable complete SSE id is observed exactly once before a single independent History read returns the committed user and assistant messages with matching reply and turn identity. This evidence does not cover other success branches."}
   ],
   "pairwise_coverage": {"status": "complete", "covered": 1, "required": 1, "missing": []},
   "seam_coverage": {"status": "incomplete", "covered": 1, "required": 2, "missing": ["monkeypatch_reference_scan"]},
@@ -38,6 +38,9 @@
     {"scenario": "GT01-sse", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
     {"scenario": "GT01-sse", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
     {"scenario": "GT01-sse", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
+    {"scenario": "GT01-feedback-refresh-toggle", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
+    {"scenario": "GT01-feedback-refresh-toggle", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
+    {"scenario": "GT01-feedback-refresh-toggle", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
     {"scenario": "GT02-ask-refresh-continue", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
     {"scenario": "GT02-ask-refresh-continue", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
     {"scenario": "GT02-ask-refresh-continue", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
@@ -53,7 +56,7 @@
   ],
   "http_sse_harness_results": [
     {"id": "real_fastapi_testclient_sqlite", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "GT01 sync/SSE, backend feedback persistence/clear and invalid-rating semantics, GT13 error, GT15 draft confirm rollback, and GT16 attachment History use real auth, routers, file SQLite, persistence, SSE relay, and History."},
-    {"id": "real_socket_disconnect_cancel_and_error_boundary", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Three loopback Uvicorn/socket tests cover transport disconnect recovery, exactly-one explicit stream_cancelled with stopped History, and the GT13 error/stream_end History boundary."}
+    {"id": "real_socket_disconnect_cancel_and_terminal_boundaries", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Four loopback Uvicorn/socket tests cover transport disconnect recovery, exactly-one explicit stream_cancelled with stopped History, the GT13 error/stream_end History boundary, and deterministic GT01 plain-chat complete-to-committed-History visibility."}
   ],
   "frontend_baseline_results": [
     {"id": "official_chat_frontend_vitest", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Six Vitest checks cover Citation/Draft/Attachment History consumers, feedback eligibility, terminal vocabulary, and Scheduled Draft confirm/dismiss clicks."},
@@ -69,7 +72,6 @@
   ],
   "missing_assets": [
     "fixture_envelopes",
-    "success_terminal_live_history_probe",
     "automated_desktop_browser_replay",
     "frontend_feedback_rollback_characterization",
     "remaining_frontend_interaction_characterization",
@@ -80,14 +82,14 @@
     "scenario-catalog.json": "sha256:9725d8e215fd2b528f0c8bc71a0ca007fa2c60b159856241f9f4ce2dd5fd3daa",
     "requirement-registry.json": "sha256:896babc35e20a5cef4884eae26b19853eccbfd7a71dcbee781db790c4b6d435e",
     "scenario-vocabulary.json": "sha256:52e35c9fc1bcc0f30d0a7dac8aef1fd446e397f512de3d943b3e82b3e4c99c94",
-    "field-ownership.json": "sha256:d23b0bfa5d519036116298ee49bd0916f7cead951ebcbf6e30e4ec1352ed5ddb",
+    "field-ownership.json": "sha256:9c78b530ef3599285fa9561d1562bfa2361c9a60de7131e39542e79f02ddd59c",
     "compatibility-matrix.json": "sha256:a0a658df111b3bfb2f705b2b810a3b02715671414ee64844506058df087bd734",
     "legacy-seams.json": "sha256:44729fa8a5fd24ebfebb3a52dfffc67a8f8264c5920977fb67540b49e79d069c",
     "pairwise-manifest.json": "sha256:7aadea29485087e60d0faa0f3c974b30d5e52e3e4ecdb68e15af1ba22ae5223b",
     "legacy-skill-corpus.json": "sha256:2c499cfca742779cfce6407fe0ac2bbddbbfa478bf47e09e5a3ac173ecd568e6",
-    "normalization-profiles.json": "sha256:79323752976e1cde514dd0b912351c337d126ac32330f7767c1eea6a13aa4256",
-    "relationship-requirements.json": "sha256:2b867fba6ab5a9e5358c655c7efe9d3711f489c325ebb601d0a83ca97f197633",
-    "manifest_closure": "sha256:07e34dfd3d45811595f78f6518bcb4ed41aa424067995869ea0ad90fa5686210"
+    "normalization-profiles.json": "sha256:12190f7fbc7cef27f8ad4341952cfb46f5a775e28da16529045a2d7dc7ac3bcd",
+    "relationship-requirements.json": "sha256:844e2fbeec78502e645b6e9a7fe5bd772011d0d13c8a5e1976a51c1331c11332",
+    "manifest_closure": "sha256:fd8b7cd2fac7437f4483461202555260cfa44609a49c2369ce0c7bb10d3b44cc"
   },
   "reviews": [
     {"role": "architecture", "status": "revision_required", "runtime_gate": "no_go"},

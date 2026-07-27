@@ -33,9 +33,7 @@ def capture_legacy_envelopes(
     *,
     captured_revision: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    scenario = execute_legacy_variant(
-        contract_root.parents[2], harness, variant_id, monkeypatch
-    )
+    scenario = execute_legacy_variant(contract_root.parents[2], harness, variant_id, monkeypatch)
 
     raw_planes = _raw_planes(harness, scenario)
     planes = CanonicalNormalizer.from_profile(
@@ -86,17 +84,21 @@ def _raw_planes(
     )
     user_event = _unique_matching_event(
         rows["events"],
-        lambda item: item["event_type"] == "user_message_received"
-        and item["payload"].get("client_turn_id") == scenario.client_turn_id,
+        lambda item: (
+            item["event_type"] == "user_message_received"
+            and item["payload"].get("client_turn_id") == scenario.client_turn_id
+        ),
         f"DB user event for {scenario.client_turn_id}",
     )
     user_message_id = user_event["payload"]["message_id"]
     assistant_event = _unique_matching_event(
         rows["events"],
-        lambda item: item["event_type"] == "assistant_message_created"
-        and (
-            item["payload"].get("client_turn_id") == scenario.client_turn_id
-            or item["payload"].get("turn_id") == user_message_id
+        lambda item: (
+            item["event_type"] == "assistant_message_created"
+            and (
+                item["payload"].get("client_turn_id") == scenario.client_turn_id
+                or item["payload"].get("turn_id") == user_message_id
+            )
         ),
         f"DB assistant event for {scenario.client_turn_id}",
     )
@@ -302,8 +304,7 @@ def _add_relationships(
                             "role": "action_persisted_attachment_id",
                             "plane": "conversation",
                             "pointer": (
-                                "/interaction_checks/0/action_result/"
-                                "persisted_state/attachment/id"
+                                "/interaction_checks/0/action_result/persisted_state/attachment/id"
                             ),
                         },
                     ],
@@ -325,6 +326,33 @@ def _add_relationships(
                     "plane": "db_events",
                     "pointer": f"/events/{indices['db_assistant']}/observed_row_order",
                 },
+            }
+        ]
+    if plane == "conversation" and variant_id == "GT01-feedback-refresh-toggle":
+        envelope["joins"] = [
+            {
+                "name": "feedback-target-message-identity",
+                "rule_id": "legacy.feedback_target_identity",
+                "references": [
+                    {
+                        "role": "conversation_assistant_message_id",
+                        "plane": "conversation",
+                        "pointer": f"/messages/{indices['conversation_assistant']}/id",
+                    },
+                    {
+                        "role": "action_feedback_target_id",
+                        "plane": "conversation",
+                        "pointer": "/interaction_checks/0/action_result/resource_id",
+                    },
+                    {
+                        "role": "feedback_response_message_id",
+                        "plane": "conversation",
+                        "pointer": (
+                            "/interaction_checks/0/action_result/persisted_state/"
+                            "up_response/message_id"
+                        ),
+                    },
+                ],
             }
         ]
     if plane == "sse":
@@ -407,23 +435,25 @@ def _add_relationships(
         ]
 
 
-def _relationship_indices(
-    planes: dict[str, Any], client_turn_id: str
-) -> dict[str, Any]:
+def _relationship_indices(planes: dict[str, Any], client_turn_id: str) -> dict[str, Any]:
     db_events = planes["db_events"]["events"]
     db_user = _unique_matching_index(
         db_events,
-        lambda event: event.get("event_type") == "user_message_received"
-        and event.get("payload", {}).get("client_turn_id") == client_turn_id,
+        lambda event: (
+            event.get("event_type") == "user_message_received"
+            and event.get("payload", {}).get("client_turn_id") == client_turn_id
+        ),
         "DB user event",
     )
     turn_id = db_events[db_user]["payload"]["message_id"]
     db_assistant = _unique_matching_index(
         db_events,
-        lambda event: event.get("event_type") == "assistant_message_created"
-        and (
-            event.get("payload", {}).get("client_turn_id") == client_turn_id
-            or event.get("payload", {}).get("turn_id") == turn_id
+        lambda event: (
+            event.get("event_type") == "assistant_message_created"
+            and (
+                event.get("payload", {}).get("client_turn_id") == client_turn_id
+                or event.get("payload", {}).get("turn_id") == turn_id
+            )
         ),
         "DB assistant event",
     )
@@ -447,8 +477,7 @@ def _relationship_indices(
         result["durable_sse_db"] = {
             index: _unique_matching_index(
                 db_events,
-                lambda db_event, event_id=event["id"]: db_event.get("event_id")
-                == event_id,
+                lambda db_event, event_id=event["id"]: db_event.get("event_id") == event_id,
                 f"DB event for SSE event {index}",
             )
             for index, event in enumerate(sse_events)
@@ -456,8 +485,10 @@ def _relationship_indices(
         }
         result["sse_user"] = _unique_matching_index(
             sse_events,
-            lambda event: event.get("event") == "user_message_received"
-            and event.get("data", {}).get("client_turn_id") == client_turn_id,
+            lambda event: (
+                event.get("event") == "user_message_received"
+                and event.get("data", {}).get("client_turn_id") == client_turn_id
+            ),
             "SSE user event",
         )
         complete = [
@@ -481,9 +512,7 @@ def _relationship_indices(
     return result
 
 
-def _unique_matching_index(
-    items: list[dict[str, Any]], predicate: Any, label: str
-) -> int:
+def _unique_matching_index(items: list[dict[str, Any]], predicate: Any, label: str) -> int:
     matches = [index for index, item in enumerate(items) if predicate(item)]
     if len(matches) != 1:
         raise AssertionError(f"expected exactly one {label}, found {len(matches)}")
@@ -507,9 +536,10 @@ def _payload_schema(plane: str) -> str:
 
 
 def _payload_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode() + b"\n"
+    canonical = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+    )
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 

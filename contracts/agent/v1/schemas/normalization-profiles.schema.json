@@ -28,7 +28,17 @@
               "required": ["match", "strategy"],
               "properties": {
                 "match": {"type": "string", "minLength": 1},
-                "strategy": {"enum": ["identity_map", "monotonic_time_map", "duration_placeholder", "preserve"]}
+                "strategy": {"enum": ["identity_map", "monotonic_time_map", "duration_placeholder", "preserve"]},
+                "qualifier": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["levels_up", "relative_pointer", "equals"],
+                  "properties": {
+                    "levels_up": {"type": "integer", "minimum": 1},
+                    "relative_pointer": {"type": "string", "pattern": "^/"},
+                    "equals": {}
+                  }
+                }
               }
             }
           }

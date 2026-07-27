@@ -15,6 +15,7 @@ from agent_golden.support import load_json
 CAPTURED_VARIANTS = (
     "GT01-sync",
     "GT01-sse",
+    "GT01-feedback-refresh-toggle",
     "GT02-ask-refresh-continue",
     "GT13-llm-error",
     "GT15-full",
@@ -53,8 +54,7 @@ def main(argv: list[str] | None = None) -> None:
                 captured_revision = None
                 if not args.update and all(path.is_file() for path in paths.values()):
                     revisions = {
-                        load_json(path)["source"]["repo_revision"]
-                        for path in paths.values()
+                        load_json(path)["source"]["repo_revision"] for path in paths.values()
                     }
                     if len(revisions) != 1:
                         raise AssertionError(

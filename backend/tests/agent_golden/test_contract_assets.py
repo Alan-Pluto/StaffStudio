@@ -70,9 +70,7 @@ def test_every_schema_is_valid_draft_2020_12(
 def test_relationship_schemas_accept_multisegment_json_pointers(
     schema_documents: dict[str, dict[str, Any]],
 ) -> None:
-    pointer_schema = schema_documents["fixture-envelope.schema.json"]["$defs"][
-        "planePointer"
-    ]
+    pointer_schema = schema_documents["fixture-envelope.schema.json"]["$defs"]["planePointer"]
     validator = Draft202012Validator(pointer_schema)
     assert not list(
         validator.iter_errors(
@@ -215,9 +213,7 @@ def test_field_ownership_and_compatibility_boundaries_are_explicit() -> None:
         claims = [item["claim"] for item in rules["owns"]]
         assert set(claims).isdisjoint(rules["forbidden"]), plane
         _unique(claims, f"{plane} owned claim")
-        owned_paths = [
-            path for item in rules["owns"] for path in item["payload_paths"]
-        ]
+        owned_paths = [path for item in rules["owns"] for path in item["payload_paths"]]
         _unique(owned_paths, f"{plane} owned payload path")
         _unique(rules["forbidden"], f"{plane} forbidden field")
 
@@ -344,6 +340,7 @@ def test_phase_scoped_pairwise_gate_and_report_are_honest() -> None:
         for variant_id in (
             "GT01-sync",
             "GT01-sse",
+            "GT01-feedback-refresh-toggle",
             "GT02-ask-refresh-continue",
             "GT13-llm-error",
             "GT15-full",
@@ -391,14 +388,10 @@ def test_fixture_matrix_is_exact_and_existing_files_are_fully_validated() -> Non
         validate_fixture_ownership(envelope, ownership)
         key = (envelope["fixture_set"], envelope["scenario_id"], envelope["variant_id"])
         groups.setdefault(key, {})[envelope["plane"]] = envelope
-    relationship_requirements = load_json(
-        CONTRACT_ROOT / "relationship-requirements.json"
-    )
+    relationship_requirements = load_json(CONTRACT_ROOT / "relationship-requirements.json")
     for envelopes in groups.values():
         if set(envelopes) == set(PLANES):
-            validate_fixture_relationships(
-                envelopes, ownership, relationship_requirements
-            )
+            validate_fixture_relationships(envelopes, ownership, relationship_requirements)
 
     if missing:
         assert report["gate_decision"] == "no_go"
@@ -454,9 +447,7 @@ def test_fixture_relationship_walker_executes_rules_and_rejects_mutations() -> N
         validate_fixture_relationships(wrong_role, ownership, requirements)
 
     wrong_path = deepcopy(envelopes)
-    wrong_path["domain"]["joins"][0]["references"][0]["pointer"] = (
-        "/outcome/message_id"
-    )
+    wrong_path["domain"]["joins"][0]["references"][0]["pointer"] = "/outcome/message_id"
     wrong_path["domain"]["payload"]["outcome"]["message_id"] = "message-1"
     with pytest.raises(AssertionError, match="endpoint path mismatch"):
         validate_fixture_relationships(wrong_path, ownership, requirements)
@@ -464,9 +455,7 @@ def test_fixture_relationship_walker_executes_rules_and_rejects_mutations() -> N
     wrong_event_semantics = deepcopy(envelopes)
     wrong_event_semantics["sse"]["payload"]["events"][0]["event"] = "status"
     with pytest.raises(AssertionError, match="endpoint qualifier mismatch"):
-        validate_fixture_relationships(
-            wrong_event_semantics, ownership, requirements
-        )
+        validate_fixture_relationships(wrong_event_semantics, ownership, requirements)
 
     required_but_missing = {
         "reference_profiles": [
@@ -501,7 +490,7 @@ def test_fixture_relationship_walker_executes_rules_and_rejects_mutations() -> N
                     }
                 ],
             }
-        ]
+        ],
     }
     with pytest.raises(AssertionError, match="missing required fixture relationships"):
         validate_fixture_relationships(envelopes, ownership, required_but_missing)
@@ -587,10 +576,7 @@ def _relationship_fixture_group() -> dict[str, dict[str, Any]]:
         "joins": [],
         "happens_before": [],
     }
-    envelopes = {
-        plane: {**deepcopy(base), "plane": plane, "payload": {}}
-        for plane in PLANES
-    }
+    envelopes = {plane: {**deepcopy(base), "plane": plane, "payload": {}} for plane in PLANES}
     envelopes["provider"]["payload"] = {"exchanges": []}
     envelopes["domain"]["payload"] = {
         "request": {"turn_id": "message-1"},
@@ -757,13 +743,9 @@ def test_conformance_go_is_derived_from_evidence() -> None:
     )
     manual_item["evidence_mode"] = "manual_observation"
     manual_item["gate_required"] = False
-    assert "frontend_baseline_results" not in conformance_gate_failures(
-        manual_not_required
-    )
+    assert "frontend_baseline_results" not in conformance_gate_failures(manual_not_required)
     manual_item["gate_required"] = True
-    assert "frontend_baseline_results" in conformance_gate_failures(
-        manual_not_required
-    )
+    assert "frontend_baseline_results" in conformance_gate_failures(manual_not_required)
 
     complete = deepcopy(report)
     complete["legacy_characterization_status"] = "complete"

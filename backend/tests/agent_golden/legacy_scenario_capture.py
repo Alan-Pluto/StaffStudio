@@ -88,6 +88,8 @@ def execute_legacy_variant(
             client_turn_id="client-gt01-sse",
             stream=True,
         )
+    if variant_id == "GT01-feedback-refresh-toggle":
+        return _feedback_refresh_toggle(harness)
     if variant_id == "GT02-ask-refresh-continue":
         return _sop_refresh_continue(repo_root, harness)
     if variant_id == "GT13-llm-error":
@@ -118,6 +120,66 @@ def _plain_chat(
     )
 
 
+def _feedback_refresh_toggle(harness: GoldenHarness) -> LegacyScenarioCapture:
+    message = "请回复后接受评价。"
+    client_turn_id = "client-feedback"
+    http = harness.post_sync(harness.turn_payload(message, client_turn_id=client_turn_id))
+    initial_history = harness.history(http.session_id)
+    assistant_message_id = initial_history[-1]["id"]
+    up_status, up_response = harness.set_feedback(assistant_message_id, "up")
+    up_history = harness.history(http.session_id)
+    invalid_status, invalid_response = harness.set_feedback(assistant_message_id, "invalid")
+    invalid_history = harness.history(http.session_id)
+    clear_status, clear_response = harness.clear_feedback(assistant_message_id)
+    cleared_history = harness.history(http.session_id)
+    return LegacyScenarioCapture(
+        http=http,
+        message=message,
+        client_turn_id=client_turn_id,
+        interaction_checks=[
+            {
+                "kind": "feedback",
+                "realtime_observation": "not_observed",
+                "refresh_observation": "history_payload_observed",
+                "action_result": {
+                    "evidence_id": "feedback-up-invalid-clear",
+                    "evidence_origin": "harness_synthetic",
+                    "resource_id": assistant_message_id,
+                    "action": "rate_up_reject_invalid_clear",
+                    "request": {
+                        "set_rating": "up",
+                        "invalid_rating": "invalid",
+                        "clear": True,
+                    },
+                    "response_status": clear_status,
+                    "persisted_state": {
+                        "initial_rating": initial_history[-1]["feedback_rating"],
+                        "up_status": up_status,
+                        "up_response": up_response,
+                        "rating_after_up_refresh": up_history[-1]["feedback_rating"],
+                        "invalid_status": invalid_status,
+                        "invalid_response": invalid_response,
+                        "rating_after_invalid_refresh": invalid_history[-1]["feedback_rating"],
+                        "clear_response": clear_response,
+                        "rating_after_clear_refresh": cleared_history[-1]["feedback_rating"],
+                    },
+                },
+            }
+        ],
+        facts=[
+            {
+                "kind": "feedback_history_lifecycle",
+                "assistant_message_id": assistant_message_id,
+                "db_event_types": [
+                    item["event_type"]
+                    for item in harness.session_events(http.session_id)
+                    if item["event_type"] == "message_feedback_changed"
+                ],
+            }
+        ],
+    )
+
+
 def _llm_error(repo_root: Path, harness: GoldenHarness) -> LegacyScenarioCapture:
     harness.publish_scene_skill(
         json.loads(
@@ -128,9 +190,7 @@ def _llm_error(repo_root: Path, harness: GoldenHarness) -> LegacyScenarioCapture
     )
     message = "触发模型异常"
     client_turn_id = "client-llm-error"
-    http = harness.post_stream(
-        harness.turn_payload(message, client_turn_id=client_turn_id)
-    )
+    http = harness.post_stream(harness.turn_payload(message, client_turn_id=client_turn_id))
     return LegacyScenarioCapture(
         http=http,
         message=message,
@@ -139,9 +199,7 @@ def _llm_error(repo_root: Path, harness: GoldenHarness) -> LegacyScenarioCapture
     )
 
 
-def _sop_refresh_continue(
-    repo_root: Path, harness: GoldenHarness
-) -> LegacyScenarioCapture:
+def _sop_refresh_continue(repo_root: Path, harness: GoldenHarness) -> LegacyScenarioCapture:
     harness.publish_scene_skill(
         json.loads(
             (repo_root / "contracts/agent/v1/corpus/production_seed/purchase.json").read_text(
@@ -180,6 +238,8 @@ def _sop_refresh_continue(
             }
         ],
     )
+
+
 def _scheduled_draft(
     harness: GoldenHarness,
     monkeypatch: Any,
@@ -223,9 +283,7 @@ def _scheduled_draft(
     payload.update({key: value for key, value in request_extra.items() if key != "session_id"})
     http = harness.post_stream(payload)
 
-    stored_draft = harness.history(initial.session_id)[-1]["metadata"][
-        "scheduled_task_draft"
-    ]
+    stored_draft = harness.history(initial.session_id)[-1]["metadata"]["scheduled_task_draft"]
     create_payload = {
         "tenant_id": "tenant_golden",
         "agent_id": "agent_golden",
@@ -299,8 +357,7 @@ def _scheduled_draft(
                     "request": create_payload,
                     "response_status": created_status,
                     "persisted_state": {
-                        "created_id_matches_history": created["id"]
-                        == first_created_metadata["id"],
+                        "created_id_matches_history": created["id"] == first_created_metadata["id"],
                         "source_session_id": created["source_session_id"],
                         "title": first_created_metadata["title"],
                         "schedule": first_created_metadata["schedule"],
@@ -323,8 +380,7 @@ def _scheduled_draft(
                     "response_status": duplicate_status,
                     "persisted_state": {
                         "created_distinct_task": duplicate["id"] != created["id"],
-                        "history_points_to_duplicate": duplicate_metadata["id"]
-                        == duplicate["id"],
+                        "history_points_to_duplicate": duplicate_metadata["id"] == duplicate["id"],
                         "task_count": duplicate_task_count,
                     },
                 },
@@ -334,9 +390,7 @@ def _scheduled_draft(
 
 
 def _attachment_history(harness: GoldenHarness) -> LegacyScenarioCapture:
-    attachments = harness.upload_text_attachment(
-        "golden-notes.txt", "第一行\n第二行".encode()
-    )
+    attachments = harness.upload_text_attachment("golden-notes.txt", "第一行\n第二行".encode())
     message = "请总结附件。"
     client_turn_id = "client-attachment"
     payload = harness.turn_payload(message, client_turn_id=client_turn_id)
@@ -353,9 +407,7 @@ def _attachment_history(harness: GoldenHarness) -> LegacyScenarioCapture:
                 "kind": "attachment",
                 "realtime_observation": "not_observed",
                 "refresh_observation": (
-                    "history_payload_observed"
-                    if attachments[0] == stored
-                    else "not_observed"
+                    "history_payload_observed" if attachments[0] == stored else "not_observed"
                 ),
                 "action_result": {
                     "evidence_id": "attachment-history-inspection",

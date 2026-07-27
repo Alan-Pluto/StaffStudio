@@ -19,6 +19,134 @@ from app.core.agent_loop import AgentLoop
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_gt01_success_terminal_has_committed_history_and_turn_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    harness = GoldenHarness(
+        tmp_path / "success-terminal.sqlite3",
+        monkeypatch,
+        ScriptedLLMPlan(stream_chunks=("committed ", "reply")),
+    )
+    original_finalize_turn = AgentLoop._finalize_turn
+    finalize_staged = threading.Event()
+    allow_commit = threading.Event()
+
+    def finalize_then_wait_for_history_probe(self, *args, **kwargs):
+        reply = original_finalize_turn(self, *args, **kwargs)
+        finalize_staged.set()
+        if not allow_commit.wait(timeout=8):
+            raise AssertionError("timed out waiting to release the GT01 commit barrier")
+        return reply
+
+    monkeypatch.setattr(AgentLoop, "_finalize_turn", finalize_then_wait_for_history_probe)
+    try:
+        with (
+            _live_server(harness) as base_url,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as history_client,
+        ):
+            stream_end_seen = threading.Event()
+            complete_seen = threading.Event()
+            state: dict[str, Any] = {
+                "observed": [],
+                "session_id": "",
+                "user_message_id": "",
+                "complete_count": 0,
+            }
+            consumer_errors: list[Exception] = []
+
+            def consume_stream() -> None:
+                try:
+                    with (
+                        httpx.Client(
+                            base_url=base_url,
+                            headers=harness.headers,
+                            timeout=10,
+                        ) as stream_client,
+                        httpx.Client(
+                            base_url=base_url,
+                            headers=harness.headers,
+                            timeout=10,
+                        ) as terminal_history_client,
+                        stream_client.stream(
+                            "POST",
+                            "/api/chat/stream",
+                            json=harness.turn_payload(
+                                "成功终态可见性测试",
+                                client_turn_id="client-real-success-terminal",
+                            ),
+                        ) as response,
+                    ):
+                        assert response.status_code == 200
+                        for event in _iter_sse(response):
+                            name = event["event"]
+                            state["observed"].append(name)
+                            state["session_id"] = str(
+                                event["data"].get("sessionId") or state["session_id"]
+                            )
+                            if name == "user_message_received":
+                                state["user_message_id"] = str(event["data"]["message_id"])
+                            if name == "stream_end":
+                                stream_end_seen.set()
+                            if name != "complete":
+                                continue
+                            state["complete_count"] += 1
+                            state["complete"] = event
+                            complete_seen.set()
+                            terminal_history = terminal_history_client.get(
+                                f"/api/chat/sessions/{state['session_id']}/messages",
+                                params={"tenant_id": "tenant_golden"},
+                            )
+                            assert terminal_history.status_code == 200, terminal_history.text
+                            state["terminal_history"] = terminal_history.json()
+                except (
+                    AssertionError,
+                    KeyError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                    httpx.HTTPError,
+                ) as exc:
+                    consumer_errors.append(exc)
+                    complete_seen.set()
+
+            consumer = threading.Thread(target=consume_stream, daemon=True)
+            consumer.start()
+            try:
+                assert finalize_staged.wait(timeout=5), "finalize barrier was not reached"
+                assert stream_end_seen.wait(timeout=5), "stream_end did not reach the socket"
+                assert not complete_seen.is_set(), "complete arrived before the commit barrier"
+                assert state["session_id"]
+                assert state["user_message_id"]
+                staged_history = history_client.get(
+                    f"/api/chat/sessions/{state['session_id']}/messages",
+                    params={"tenant_id": "tenant_golden"},
+                )
+                assert staged_history.status_code == 200, staged_history.text
+                assert [item["role"] for item in staged_history.json()] == ["user"]
+            finally:
+                allow_commit.set()
+                consumer.join(timeout=10)
+
+            assert not consumer.is_alive(), "SSE consumer did not finish"
+            if consumer_errors:
+                raise consumer_errors[0]
+            assert state["observed"][-1] == "complete"
+            assert state["complete_count"] == 1
+            assert state["complete"]["id"]
+            terminal_history = state["terminal_history"]
+            assert [item["role"] for item in terminal_history] == ["user", "assistant"]
+            assert terminal_history[-1]["content"] == state["complete"]["data"]["reply"]
+            assert terminal_history[-1]["metadata"]["turn_id"] == state["user_message_id"]
+    finally:
+        allow_commit.set()
+        harness.close()
+
+
 def test_gt12_transport_disconnect_worker_finishes_and_history_recovers(
     tmp_path,
     monkeypatch,
@@ -30,11 +158,14 @@ def test_gt12_transport_disconnect_worker_finishes_and_history_recovers(
     )
     monkeypatch.setattr(AgentLoop, "_pace_stream", lambda *_args: time.sleep(0.01))
     try:
-        with _live_server(harness) as base_url, httpx.Client(
-            base_url=base_url,
-            headers=harness.headers,
-            timeout=10,
-        ) as client:
+        with (
+            _live_server(harness) as base_url,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as client,
+        ):
             session_id = ""
             with client.stream(
                 "POST",
@@ -76,15 +207,19 @@ def test_gt12_explicit_cancel_is_visible_on_stream_and_history(
     )
     monkeypatch.setattr(AgentLoop, "_pace_stream", lambda *_args: time.sleep(0.01))
     try:
-        with _live_server(harness) as base_url, httpx.Client(
-            base_url=base_url,
-            headers=harness.headers,
-            timeout=10,
-        ) as stream_client, httpx.Client(
-            base_url=base_url,
-            headers=harness.headers,
-            timeout=10,
-        ) as command_client:
+        with (
+            _live_server(harness) as base_url,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as stream_client,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as command_client,
+        ):
             observed: list[str] = []
             session_id = ""
             turn_id = ""
@@ -141,15 +276,19 @@ def test_gt13_history_visibility_at_error_stream_end_and_assistant_event(
     harness.publish_scene_skill(json.loads(purchase.read_text(encoding="utf-8")))
     monkeypatch.setattr(AgentLoop, "_pace_stream", lambda *_args: time.sleep(0.02))
     try:
-        with _live_server(harness) as base_url, httpx.Client(
-            base_url=base_url,
-            headers=harness.headers,
-            timeout=10,
-        ) as stream_client, httpx.Client(
-            base_url=base_url,
-            headers=harness.headers,
-            timeout=10,
-        ) as history_client:
+        with (
+            _live_server(harness) as base_url,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as stream_client,
+            httpx.Client(
+                base_url=base_url,
+                headers=harness.headers,
+                timeout=10,
+            ) as history_client,
+        ):
             visibility: dict[str, list[str]] = {}
             observed: list[str] = []
             session_id = ""
@@ -217,14 +356,16 @@ def _live_server(harness: GoldenHarness) -> Iterator[str]:
 
 def _iter_sse(response: httpx.Response) -> Iterator[dict[str, Any]]:
     event_name = "message"
+    event_id = ""
     data_lines: list[str] = []
     for line in response.iter_lines():
         if not line:
             if data_lines:
                 data = json.loads("\n".join(data_lines))
                 assert isinstance(data, dict)
-                yield {"event": event_name, "data": data}
+                yield {"id": event_id, "event": event_name, "data": data}
             event_name = "message"
+            event_id = ""
             data_lines = []
             continue
         field, separator, value = line.partition(":")
@@ -232,6 +373,8 @@ def _iter_sse(response: httpx.Response) -> Iterator[dict[str, Any]]:
             value = value[1:]
         if field == "event":
             event_name = value
+        elif field == "id":
+            event_id = value
         elif field == "data":
             data_lines.append(value)
 

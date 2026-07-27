@@ -83,6 +83,16 @@
       ]
     },
     {
+      "id": "legacy.feedback_target_identity",
+      "fixture_sets": ["legacy_characterization"],
+      "operator": "equal",
+      "minimum_references": 3,
+      "allowed_references": [
+        {"plane": "conversation", "pointer_prefix": "/messages"},
+        {"plane": "conversation", "pointer_prefix": "/interaction_checks"}
+      ]
+    },
+    {
       "id": "target.committed_message_identity",
       "fixture_sets": ["contract_v1"],
       "operator": "equal",
