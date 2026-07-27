@@ -3,7 +3,7 @@
   "contract_version": "agent/v1",
   "phase_scope": "0A",
   "source_revision": "6c6594d42c08ae3757a72aa0e654a3fe555e4077",
-  "generated_at": "2026-07-27T06:42:47Z",
+  "generated_at": "2026-07-27T07:01:48Z",
   "environment": {"status": "contract_and_legacy_characterization_in_progress", "database": "real_file_sqlite_ten_variants_plus_isolated_browser_sqlite", "frontend": "vitest_build_and_loopback_browser_characterization_partial"},
   "gate_decision": "no_go",
   "gate_reasons": [
@@ -96,9 +96,9 @@
     "legacy-seams.json": "sha256:44729fa8a5fd24ebfebb3a52dfffc67a8f8264c5920977fb67540b49e79d069c",
     "pairwise-manifest.json": "sha256:7aadea29485087e60d0faa0f3c974b30d5e52e3e4ecdb68e15af1ba22ae5223b",
     "legacy-skill-corpus.json": "sha256:2c499cfca742779cfce6407fe0ac2bbddbbfa478bf47e09e5a3ac173ecd568e6",
-    "normalization-profiles.json": "sha256:2be3a2ad27f6ff312b7ca4b90917eb5cb6c38fd3b401ab7e9a61fea5d0628955",
+    "normalization-profiles.json": "sha256:8439f9fc9f269c0593d1768125ae9eaf71717260df676cc03d0ddf1c6e672c66",
     "relationship-requirements.json": "sha256:b3a46634a7fe472cf99462af4bd6dee53be71cb092abee11ed67ff6b57b5fc38",
-    "manifest_closure": "sha256:1b294b5b5a3345ca7b9157c39139b06111597e3e163db562068663467cbd12d0"
+    "manifest_closure": "sha256:77ac568facc9580d0fff424a021aef3722d6f35b8865ebb54474f6098a059562"
   },
   "reviews": [
     {"role": "architecture", "status": "revision_required", "runtime_gate": "no_go"},

@@ -110,6 +110,7 @@ class CanonicalNormalizer:
             "identity_map",
             "monotonic_time_map",
             "duration_placeholder",
+            "traceback_normalized",
             "preserve",
         }
         unsupported = {item["strategy"] for item in rules} - supported
@@ -157,6 +158,12 @@ class CanonicalNormalizer:
                 return self._stable_map(self._ids, value, "id")
             if strategy == "monotonic_time_map":
                 return self._stable_map(self._times, value, "time")
+            if strategy == "traceback_normalized":
+                return re.sub(
+                    r'  File "[^"]+/(backend/(?:app|tests)/[^"]+)", line \d+',
+                    r'  File "<repo>/\1", line <line>',
+                    value,
+                )
         if strategy == "duration_placeholder" and isinstance(value, (int, float)) and not isinstance(value, bool):
             return "<duration_ms>"
         return value

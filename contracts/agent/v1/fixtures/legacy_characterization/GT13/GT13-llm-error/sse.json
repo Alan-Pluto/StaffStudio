@@ -9,7 +9,7 @@
   "normalization_profile": "agent-golden-v1",
   "source": {
     "kind": "captured_runtime",
-    "repo_revision": "2a36d3fad208af0ce0d6cfb3bc946d9e858d6145",
+    "repo_revision": "ea475130dc3ba6dddd08d3456769d4062f73b75b",
     "artifacts": [
       {
         "path": "backend/tests/agent_golden/fixture_writer.py",
@@ -25,7 +25,7 @@
       },
       {
         "path": "backend/tests/agent_golden/support.py",
-        "sha256": "sha256:dc35bef1b0256844800b6398aa667f08627f1116b768bc710a010331e71c0b94"
+        "sha256": "sha256:8396ad2520dbeaa8aa4c796c39296dadd5465dc906c9d38596efdc29a6696869"
       },
       {
         "path": "backend/tests/agent_golden/scripted_dependencies.py",
@@ -33,7 +33,7 @@
       },
       {
         "path": "contracts/agent/v1/normalization-profiles.json",
-        "sha256": "sha256:2be3a2ad27f6ff312b7ca4b90917eb5cb6c38fd3b401ab7e9a61fea5d0628955"
+        "sha256": "sha256:8439f9fc9f269c0593d1768125ae9eaf71717260df676cc03d0ddf1c6e672c66"
       },
       {
         "path": "contracts/agent/v1/scenario-catalog.json",
@@ -46,7 +46,7 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:a450c9375fd22f7859decb53b0dc2f0450c5f699d13482301c13a336709a7eb6",
+  "content_hash": "sha256:0438957bf7f914b313da2d9d6ddab5869f84d0596533cbd94c262d5028ea306c",
   "joins": [
     {
       "name": "durable-session-created-event-identity",
@@ -435,7 +435,7 @@
           "code": "LLM_ERROR",
           "message": "scripted failure at Router",
           "client_turn_id": "client-llm-error",
-          "error_traceback": "Traceback (most recent call last):\n  File \"/Users/a1/Documents/openbmb 新项目/StaffDeck-agent-provider-refactor/backend/app/core/agent_loop.py\", line 1744, in handle_turn_stream\n    router_decision = self.router.decide(\n                      ^^^^^^^^^^^^^^^^^^^\n  File \"/Users/a1/Documents/openbmb 新项目/StaffDeck-agent-provider-refactor/backend/app/core/router.py\", line 50, in decide\n    raw = LLMClient(model_config).generate_json(\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/a1/Documents/openbmb 新项目/StaffDeck-agent-provider-refactor/backend/tests/agent_golden/scripted_dependencies.py\", line 53, in generate_json\n    self._raise_if_scripted(phase)\n  File \"/Users/a1/Documents/openbmb 新项目/StaffDeck-agent-provider-refactor/backend/tests/agent_golden/scripted_dependencies.py\", line 115, in _raise_if_scripted\n    raise LLMError(f\"scripted failure at {phase}\")\napp.llm.client.LLMError: scripted failure at Router\n",
+          "error_traceback": "Traceback (most recent call last):\n  File \"<repo>/backend/app/core/agent_loop.py\", line <line>, in handle_turn_stream\n    router_decision = self.router.decide(\n                      ^^^^^^^^^^^^^^^^^^^\n  File \"<repo>/backend/app/core/router.py\", line <line>, in decide\n    raw = LLMClient(model_config).generate_json(\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<repo>/backend/tests/agent_golden/scripted_dependencies.py\", line <line>, in generate_json\n    self._raise_if_scripted(phase)\n  File \"<repo>/backend/tests/agent_golden/scripted_dependencies.py\", line <line>, in _raise_if_scripted\n    raise LLMError(f\"scripted failure at {phase}\")\napp.llm.client.LLMError: scripted failure at Router\n",
           "user_message_id": "<id:0001>",
           "turn_id": "<id:0001>"
         }

@@ -255,3 +255,23 @@ def test_legacy_camel_case_runtime_fields_normalize_without_breaking_joins() -> 
     assert normalized["db"]["skill_id"] == "skill-stable"
     assert normalized["db"]["resource_id"] == "resource-stable"
     assert normalized["db"]["chunk_id"] == "chunk-stable"
+
+
+def test_normalizer_stabilizes_repo_traceback_paths_and_lines() -> None:
+    normalizer = CanonicalNormalizer(
+        rules=[{"match": "**.error_traceback", "strategy": "traceback_normalized"}]
+    )
+
+    normalized = normalizer.normalize(
+        {
+            "error_traceback": (
+                'Traceback:\n  File "/tmp/work/backend/app/core/agent_loop.py", '
+                'line 1744, in handle_turn_stream\napp.llm.LLMError: failed\n'
+            )
+        }
+    )
+
+    assert normalized["error_traceback"] == (
+        'Traceback:\n  File "<repo>/backend/app/core/agent_loop.py", '
+        'line <line>, in handle_turn_stream\napp.llm.LLMError: failed\n'
+    )

@@ -26,6 +26,7 @@ from app.agents.branching import (
 from app.channels.service_outbox import stage_channel_delivery
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
+from app.core.legacy_graph_rules import LegacyGraphRules
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
     FALLBACK_REPLY,
@@ -174,16 +175,6 @@ def _single_line_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _normalize_action(action: object) -> str:
-    text = str(action or "").strip().strip("`'\"").strip()
-    if not text:
-        return ""
-    if text.startswith("call_tool:"):
-        tool_name = text.split(":", 1)[1].strip().strip("`'\"").strip()
-        return f"call_tool:{tool_name}" if tool_name else ""
-    return text
-
-
 def _slot_has_value(slots: dict[str, Any], field: str) -> bool:
     value = slots.get(field)
     return value is not None and value != "" and value != []
@@ -218,23 +209,6 @@ def _profile_name_from_memory(memory_context: list[dict[str, object]]) -> str:
         if content:
             return content[:40]
     return ""
-
-
-def _node_as_step(node: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "step_id": node.get("node_id"),
-        "node_id": node.get("node_id"),
-        "type": node.get("type"),
-        "name": node.get("name"),
-        "instruction": node.get("instruction"),
-        "optional": node.get("optional", False),
-        "condition": node.get("condition"),
-        "expected_user_info": node.get("expected_user_info") or [],
-        "allowed_actions": node.get("allowed_actions") or [],
-        "knowledge_scope": node.get("knowledge_scope") or {},
-        "retry_policy": node.get("retry_policy") or {},
-        "metadata": node.get("metadata") or {},
-    }
 
 
 class AgentLoopPreconditionError(Exception):
@@ -5112,14 +5086,7 @@ class AgentLoop:
 
     def _graph_pending_steps(self, chat_session: ChatSession) -> list[str]:
         value = (chat_session.slots_json or {}).get(GRAPH_PENDING_STEPS_SLOT)
-        if not isinstance(value, list):
-            return []
-        pending: list[str] = []
-        for item in value:
-            step_id = str(item or "").strip()
-            if step_id and step_id not in pending:
-                pending.append(step_id)
-        return pending
+        return LegacyGraphRules.normalize_pending_steps(value)
 
     def _store_graph_pending_steps(
         self,
@@ -5128,11 +5095,7 @@ class AgentLoop:
         pending_steps: list[str],
     ) -> None:
         slots = dict(chat_session.slots_json or {})
-        normalized = []
-        for item in pending_steps:
-            step_id = str(item or "").strip()
-            if step_id and step_id not in normalized:
-                normalized.append(step_id)
+        normalized = LegacyGraphRules.normalize_pending_steps(pending_steps)
         if normalized:
             slots[GRAPH_PENDING_STEPS_SLOT] = normalized
         else:
@@ -5156,18 +5119,11 @@ class AgentLoop:
         if not source_step_id:
             return
         outgoing = self._graph_outgoing_edges(active_skill).get(source_step_id) or []
-        selected_conditions = {
-            self._edge_condition(edge)
-            for edge in outgoing
-            if str(edge.get("next_node_id") or "").strip() == selected_step_id
-        }
-        sibling_steps = [
-            str(edge.get("next_node_id") or "").strip()
-            for edge in outgoing
-            if str(edge.get("next_node_id") or "").strip()
-            and str(edge.get("next_node_id") or "").strip() != selected_step_id
-            and self._edge_condition(edge) in selected_conditions
-        ]
+        sibling_steps = LegacyGraphRules.sibling_steps_from_edges(
+            outgoing,
+            selected_step_id,
+            self._edge_condition,
+        )
         if not sibling_steps:
             return
         pending_steps = self._graph_pending_steps(chat_session)
@@ -5177,7 +5133,7 @@ class AgentLoop:
         self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
 
     def _edge_condition(self, edge: dict[str, Any]) -> str:
-        return str(edge.get("condition") or "").strip().lower()
+        return LegacyGraphRules.edge_condition(edge)
 
     def _activate_next_pending_graph_step(
         self,
@@ -5199,16 +5155,10 @@ class AgentLoop:
         return False
 
     def _skill_has_step(self, skill: Skill, step_id: str | None) -> bool:
-        if not step_id:
-            return False
-        return any(node.get("node_id") == step_id for node in self._skill_nodes(skill))
+        return LegacyGraphRules.has_step(skill.content_json or {}, step_id)
 
     def _step_actions(self, step: dict[str, Any]) -> list[str]:
-        return [
-            action
-            for action in (_normalize_action(item) for item in step.get("allowed_actions", []))
-            if action
-        ]
+        return LegacyGraphRules.step_actions(step)
 
     def _record_tool_result_in_slots(
         self,
@@ -5960,95 +5910,39 @@ class AgentLoop:
         return first_step.get("step_id") if first_step else None
 
     def _skill_steps(self, skill: Skill) -> list[dict[str, Any]]:
-        return [_node_as_step(node) for node in self._ordered_skill_nodes(skill)]
+        return LegacyGraphRules.steps_from_nodes(self._ordered_skill_nodes(skill))
 
     def _skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        content = skill.content_json or {}
-        return [node for node in content.get("nodes", []) if isinstance(node, dict)]
+        return LegacyGraphRules.nodes(skill.content_json or {})
 
     def _ordered_skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        nodes = self._skill_nodes(skill)
-        if not nodes:
-            return []
         content = skill.content_json or {}
-        nodes_by_id = {
-            str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")
-        }
-        start_node_id = str(content.get("start_node_id") or "").strip()
-        if not start_node_id or start_node_id not in nodes_by_id:
-            start_node_id = str(nodes[0].get("node_id") or "")
-        outgoing = self._graph_outgoing_edges(skill)
-        ordered: list[dict[str, Any]] = []
-        visited: set[str] = set()
-
-        def visit(node_id: str) -> None:
-            if not node_id or node_id in visited:
-                return
-            node = nodes_by_id.get(node_id)
-            if not node:
-                return
-            visited.add(node_id)
-            ordered.append(node)
-            for edge in outgoing.get(node_id, []):
-                visit(str(edge.get("next_node_id") or ""))
-
-        visit(start_node_id)
-        for node in nodes:
-            node_id = str(node.get("node_id") or "")
-            if node_id not in visited:
-                ordered.append(node)
-        return ordered
+        return LegacyGraphRules.ordered_nodes(
+            content,
+            nodes=self._skill_nodes(skill),
+            outgoing=self._graph_outgoing_edges(skill),
+        )
 
     def _graph_outgoing_edges(self, skill: Skill) -> dict[str, list[dict[str, Any]]]:
-        content = skill.content_json or {}
-        edges = [edge for edge in content.get("edges", []) if isinstance(edge, dict)]
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for edge in edges:
-            source = str(edge.get("source_node_id") or "")
-            target = str(edge.get("next_node_id") or "")
-            if not source or not target:
-                continue
-            grouped.setdefault(source, []).append(edge)
-        for source, items in grouped.items():
-            grouped[source] = sorted(items, key=lambda item: int(item.get("priority") or 0))
-        return grouped
+        return LegacyGraphRules.outgoing_edges(skill.content_json or {})
 
     def _next_steps_from_graph(
         self, skill: Skill, active_step_id: str | None
     ) -> list[dict[str, Any]]:
         if not active_step_id:
             return []
-        nodes_by_id = {
-            str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)
-        }
-        outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
-        return [
-            nodes_by_id[target_id]
-            for target_id in (str(edge.get("next_node_id") or "") for edge in outgoing)
-            if target_id in nodes_by_id
-        ]
+        return LegacyGraphRules.next_steps_from_parts(
+            self._skill_nodes(skill),
+            self._graph_outgoing_edges(skill).get(active_step_id, []),
+        )
 
     def _default_next_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
         if not active_step_id:
             return None
-        nodes_by_id = {
-            str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)
-        }
-        outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
-        if not outgoing:
-            return None
-        if len(outgoing) == 1:
-            return nodes_by_id.get(str(outgoing[0].get("next_node_id") or ""))
-        unconditional = []
-        for edge in outgoing:
-            condition = str(edge.get("condition") or "").strip().lower()
-            if condition in {"", "default", "else"}:
-                target = nodes_by_id.get(str(edge.get("next_node_id") or ""))
-                if target:
-                    unconditional.append(target)
-        if len(unconditional) == 1:
-            return unconditional[0]
-        return None
+        return LegacyGraphRules.default_next_step_from_parts(
+            self._skill_nodes(skill),
+            self._graph_outgoing_edges(skill).get(active_step_id, []),
+        )
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
@@ -6171,33 +6065,18 @@ class AgentLoop:
         if not active_step_id:
             return False
         content = skill.content_json or {}
-        terminal_node_ids = {str(node_id) for node_id in content.get("terminal_node_ids", [])}
+        terminal_node_ids = {
+            str(node_id) for node_id in content.get("terminal_node_ids", [])
+        }
         if active_step_id not in terminal_node_ids:
             return False
-        current_step = self._current_skill_step(skill, active_step_id)
-        if not current_step:
-            return False
-
-        expected = [str(field) for field in current_step.get("expected_user_info", [])]
-        if any(not self._skill_slot_satisfied(slots, field) for field in expected):
-            return False
-
-        required = [str(field) for field in content.get("required_info", [])]
-        if any(not self._skill_slot_satisfied(slots, field) for field in required):
-            return False
-
-        actions = self._step_actions(current_step)
-        if not actions:
-            return True
-        terminal_actions = {
-            "answer_user",
-            "handoff_human",
-            "continue_flow",
-            "ask_user",
-            "ask_clarification",
-        }
-        return all(
-            action in terminal_actions or action.startswith("call_tool:") for action in actions
+        return LegacyGraphRules.terminal_position_from_step(
+            content,
+            active_step_id,
+            slots,
+            self._current_skill_step(skill, active_step_id),
+            self._skill_slot_satisfied,
+            self._step_actions,
         )
 
     def _current_skill_step(
@@ -6205,17 +6084,9 @@ class AgentLoop:
     ) -> dict[str, Any] | None:
         if not active_step_id:
             return None
-        for step in self._skill_steps(skill):
-            if not isinstance(step, dict):
-                continue
-            step_ids = {
-                str(step.get("step_id") or ""),
-                str(step.get("node_id") or ""),
-                str(step.get("id") or ""),
-            }
-            if active_step_id in step_ids:
-                return step
-        return None
+        return LegacyGraphRules.current_step_from_steps(
+            self._skill_steps(skill), active_step_id
+        )
 
     def _current_step_can_finish_after_tool(self, skill: Skill, chat_session: ChatSession) -> bool:
         step = self._current_skill_step(skill, chat_session.active_step_id)
@@ -6230,20 +6101,13 @@ class AgentLoop:
         )
 
     def _actions_allow_final_reply(self, actions: list[str]) -> bool:
-        actions = [_normalize_action(action) for action in actions]
-        return "answer_user" in actions
+        return LegacyGraphRules.actions_allow_final_reply(actions)
 
     def _skill_slot_satisfied(self, slots: dict[str, Any], field: str) -> bool:
-        normalized = field.strip()
-        if not normalized:
-            return True
-        if self._slot_has_value(slots, normalized):
-            return True
-        return False
+        return LegacyGraphRules.slot_satisfied(slots, field)
 
     def _slot_has_value(self, slots: dict[str, Any], field: str) -> bool:
-        value = slots.get(field)
-        return value is not None and value != ""
+        return LegacyGraphRules.slot_has_value(slots, field)
 
     def _complete_active_skill(
         self, tenant_id: str, chat_session: ChatSession, skill: Skill, reason: str

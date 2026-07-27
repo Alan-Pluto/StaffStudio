@@ -9,7 +9,7 @@
   "normalization_profile": "agent-golden-v1",
   "source": {
     "kind": "captured_runtime",
-    "repo_revision": "2a36d3fad208af0ce0d6cfb3bc946d9e858d6145",
+    "repo_revision": "ea475130dc3ba6dddd08d3456769d4062f73b75b",
     "artifacts": [
       {
         "path": "backend/tests/agent_golden/fixture_writer.py",
@@ -25,7 +25,7 @@
       },
       {
         "path": "backend/tests/agent_golden/support.py",
-        "sha256": "sha256:dc35bef1b0256844800b6398aa667f08627f1116b768bc710a010331e71c0b94"
+        "sha256": "sha256:8396ad2520dbeaa8aa4c796c39296dadd5465dc906c9d38596efdc29a6696869"
       },
       {
         "path": "backend/tests/agent_golden/scripted_dependencies.py",
@@ -33,7 +33,7 @@
       },
       {
         "path": "contracts/agent/v1/normalization-profiles.json",
-        "sha256": "sha256:2be3a2ad27f6ff312b7ca4b90917eb5cb6c38fd3b401ab7e9a61fea5d0628955"
+        "sha256": "sha256:8439f9fc9f269c0593d1768125ae9eaf71717260df676cc03d0ddf1c6e672c66"
       },
       {
         "path": "contracts/agent/v1/scenario-catalog.json",

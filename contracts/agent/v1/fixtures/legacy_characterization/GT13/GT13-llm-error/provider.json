@@ -9,7 +9,7 @@
   "normalization_profile": "agent-golden-v1",
   "source": {
     "kind": "explicit_manifest",
-    "repo_revision": "2a36d3fad208af0ce0d6cfb3bc946d9e858d6145",
+    "repo_revision": "ea475130dc3ba6dddd08d3456769d4062f73b75b",
     "artifacts": [
       {
         "path": "contracts/agent/v1/scenario-catalog.json",
