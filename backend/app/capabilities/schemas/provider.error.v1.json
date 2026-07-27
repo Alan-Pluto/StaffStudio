@@ -12,7 +12,7 @@
     "provider_id": {"type": ["string", "null"]},
     "extensions": {
       "type": "object",
-      "patternProperties": {"^[a-z][a-z0-9_]*$": {"type": "object"}},
+      "patternProperties": {"^(?!core$|staffdeck$)[a-z][a-z0-9_]*$": {"type": "object"}},
       "additionalProperties": false
     }
   }

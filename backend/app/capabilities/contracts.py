@@ -8,6 +8,8 @@ from typing import Literal, Protocol, TypeAlias
 JsonValue: TypeAlias = (
     None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 )
+JsonObject: TypeAlias = Mapping[str, JsonValue]
+ExtensionMap: TypeAlias = Mapping[str, JsonObject]
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,7 @@ class KnowledgeSearchResult:
     warnings: tuple[str, ...] = ()
     next_cursor: str | None = None
     service_version: str | None = None
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,7 @@ class CitationDetail:
     title: str | None
     content: str | None
     source_ref: str | None = None
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,7 @@ class SceneSkillSummary:
     version: str
     name: str
     definition_hash: str
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,8 @@ class SceneSkillDefinition:
     start_step_id: str
     steps: tuple[Mapping[str, JsonValue], ...]
     edges: tuple[Mapping[str, JsonValue], ...] = ()
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
+    terminal_node_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,7 +118,7 @@ class GeneralSkillSummary:
     name: str
     package_id: str
     digest: str
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,7 @@ class GeneralSkillPackage:
     entrypoint: str
     input_schema: Mapping[str, JsonValue] = field(default_factory=dict)
     output_schema: Mapping[str, JsonValue] = field(default_factory=dict)
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -188,7 +191,7 @@ class SkillExecutionResult:
     artifacts: tuple[SkillArtifact, ...] = ()
     error_code: str | None = None
     last_event_cursor: str | None = None
-    extensions: Mapping[str, JsonValue] = field(default_factory=dict)
+    extensions: ExtensionMap = field(default_factory=dict)
 
 
 class KnowledgeRuntime(Protocol):

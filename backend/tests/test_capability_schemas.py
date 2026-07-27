@@ -51,6 +51,22 @@ def test_provider_error_schema_requires_retryability() -> None:
     assert list(validator.iter_errors({"error_code": "X"}))
 
 
+def test_provider_error_schema_rejects_reserved_extension_namespaces() -> None:
+    schema = load_schema("provider.error.v1.json")
+    validator = Draft202012Validator(schema)
+    valid = {
+        "error_code": "X",
+        "message": "failed",
+        "retryable": False,
+        "request_id": "req-1",
+        "extensions": {"vendor_x": {}},
+    }
+    assert not list(validator.iter_errors(valid))
+    for namespace in ("core", "staffdeck"):
+        invalid = {**valid, "extensions": {namespace: {}}}
+        assert list(validator.iter_errors(invalid))
+
+
 def test_python_provider_error_has_one_wire_error_code_mapping() -> None:
     schema = load_schema("provider.error.v1.json")
     validator = Draft202012Validator(schema)

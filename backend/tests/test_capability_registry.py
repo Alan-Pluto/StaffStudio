@@ -6,6 +6,7 @@ from app.capabilities.contracts import (
     CapabilityContext,
     KnowledgeSearchQuery,
     KnowledgeSearchResult,
+    SceneSkillDefinition,
 )
 from app.capabilities.registry import CapabilityBinding, CapabilityRegistry
 
@@ -80,3 +81,18 @@ def test_knowledge_result_has_service_owned_shape_and_extensions() -> None:
     )
     assert result.outcome == "partial"
     assert result.extensions["vendor_x"]["rerank_score"] == 0.8
+
+
+def test_scene_definition_exposes_terminal_nodes_without_shifting_legacy_arguments() -> None:
+    definition = SceneSkillDefinition(
+        "expense_approval",
+        "1.0.0",
+        "sha256:definition",
+        "collect_amount",
+        (),
+        (),
+        {"vendor_x": {"revision": 1}},
+        ("complete",),
+    )
+    assert definition.extensions["vendor_x"]["revision"] == 1
+    assert definition.terminal_node_ids == ("complete",)
