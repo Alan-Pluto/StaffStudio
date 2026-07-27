@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import queue
 import threading
 import traceback
@@ -30,12 +29,16 @@ from app.core.legacy_conversation_projection import LegacyConversationProjection
 from app.core.legacy_general_skill_action import LegacyGeneralSkillAction
 from app.core.legacy_graph_rules import LegacyGraphRules
 from app.core.legacy_knowledge_action import (
-    KNOWLEDGE_RESULTS_CACHE as _KNOWLEDGE_RESULTS_CACHE,
+    KNOWLEDGE_RESULTS_CACHE as _KNOWLEDGE_RESULTS_CACHE,  # noqa: F401 - legacy import seam
 )
 from app.core.legacy_knowledge_action import (
-    KNOWLEDGE_STEPS_SEEN as _KNOWLEDGE_STEPS_SEEN,
+    KNOWLEDGE_STEPS_SEEN as _KNOWLEDGE_STEPS_SEEN,  # noqa: F401 - legacy import seam
 )
 from app.core.legacy_knowledge_action import LegacyKnowledgeAction
+from app.core.legacy_reflection_coordinator import (
+    LegacyReflectionCoordinator,
+    LegacyReflectionPolicy,
+)
 from app.core.legacy_tool_action import LegacyToolAction, LegacyToolActionCallbacks
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
@@ -2978,66 +2981,28 @@ class AgentLoop:
         completed_skill_ids_this_turn: set[str] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
-        if conversation_context is None:
-            conversation_context = self._conversation_context(chat_session)
-        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
-        rounds = max(0, min(max_rounds, REFLECTION_MAX_ROUNDS_LIMIT))
-        if rounds <= 0:
-            if self._should_try_reflection(router_decision, step_result, tool_result):
-                payload = {
-                    "needs_retry": False,
-                    "reason": "企业端反思轮数配置为 0，已跳过反思。",
-                    "target_skill_id": None,
-                    "target_step_id": None,
-                    "target_tool_name": None,
-                    "skipped": True,
-                    "skip_reason": "reflection_disabled",
-                }
-                events = getattr(self, "events", None)
-                if events is not None:
-                    events.record(request.tenant_id, chat_session.id, "reflection_skipped", payload)
-                if stream_events is not None:
-                    stream_events.append(("reflection_decision", payload))
-            return active_skill, router_decision, step_result, tool_result
-        for round_index in range(rounds):
-            if not self._should_try_reflection(router_decision, step_result, tool_result):
-                break
-            if stream_events is not None and round_index > 0:
-                stream_events.append(
-                    (
-                        "status",
-                        {
-                            "phase": "reflecting",
-                            "text": "正在反思",
-                            "reflection_round": round_index + 1,
-                            "reflection_max_rounds": rounds,
-                        },
-                    )
-                )
-            (
-                active_skill,
-                router_decision,
-                step_result,
-                tool_result,
-                retried,
-            ) = self._reflect_and_retry(
-                request,
-                chat_session,
-                skills,
-                tools,
-                model_config,
-                active_skill,
-                router_decision,
-                step_result,
-                tool_result,
-                conversation_context,
-                stream_events,
-                completed_skill_ids_this_turn,
-                memory_context,
-            )
-            if not retried:
-                break
-        return active_skill, router_decision, step_result, tool_result
+        events = getattr(self, "events", None)
+        return LegacyReflectionCoordinator.run_rounds(
+            request,
+            chat_session,
+            skills,
+            tools,
+            model_config,
+            active_skill,
+            router_decision,
+            step_result,
+            tool_result,
+            max_rounds,
+            conversation_context,
+            stream_events,
+            completed_skill_ids_this_turn,
+            memory_context,
+            round_limit=REFLECTION_MAX_ROUNDS_LIMIT,
+            context_loader=self._conversation_context,
+            should_try=self._should_try_reflection,
+            reflect_and_retry=self._reflect_and_retry,
+            record_event=events.record if events is not None else None,
+        )
 
     def _auto_progress_skill_graph(
         self,
@@ -3210,131 +3175,31 @@ class AgentLoop:
         completed_skill_ids_this_turn: set[str] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None, bool]:
-        if conversation_context is None:
-            conversation_context = self._conversation_context(chat_session)
-        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
-        if not self._should_try_reflection(router_decision, step_result, tool_result):
-            return active_skill, router_decision, step_result, tool_result, False
-
-        try:
-            reflection = self.reflection_agent.review(
-                request.message,
-                chat_session,
-                active_skill,
-                router_decision,
-                step_result,
-                tool_result,
-                skills,
-                tools,
-                model_config,
-                conversation_context,
-                memory_context,
-            )
-        except LLMError as exc:
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "reflection_error",
-                {"message": str(exc)},
-            )
-            if stream_events is not None:
-                stream_events.append(
-                    (
-                        "reflection_decision",
-                        {
-                            "needs_retry": False,
-                            "reason": f"反思失败：{exc}",
-                            "target_skill_id": None,
-                            "target_step_id": None,
-                            "target_tool_name": None,
-                        },
-                    )
-                )
-            return active_skill, router_decision, step_result, tool_result, False
-
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "reflection_decision_created",
-            reflection.model_dump(),
-        )
-        if stream_events is not None:
-            stream_events.append(("reflection_decision", reflection.model_dump(mode="json")))
-        if not reflection.needs_retry:
-            return active_skill, router_decision, step_result, tool_result, False
-
-        retry_tool_call = self._tool_call_from_reflection(
-            reflection,
-            chat_session,
-            tools,
-            request.message,
-        )
-        if retry_tool_call and self._reflection_tool_retry_targets_current_skill(
-            reflection, chat_session
-        ):
-            retry_result = self._retry_with_reflection_tool_call(
-                request,
-                chat_session,
-                active_skill,
-                router_decision,
-                retry_tool_call,
-                reflection.reason,
-                stream_events,
-                tools,
-                model_config,
-                conversation_context,
-                memory_context,
-            )
-            return (*retry_result, True)
-
-        retry_router_decision = self._router_decision_from_reflection(
-            reflection,
+        return LegacyReflectionCoordinator.reflect_and_retry(
+            request,
             chat_session,
             skills,
+            tools,
+            model_config,
+            active_skill,
             router_decision,
+            step_result,
+            tool_result,
+            conversation_context,
+            stream_events,
             completed_skill_ids_this_turn,
+            memory_context,
+            context_loader=self._conversation_context,
+            should_try=self._should_try_reflection,
+            review=lambda *args, **kwargs: self.reflection_agent.review(*args, **kwargs),
+            llm_error_type=LLMError,
+            record_event=lambda *args, **kwargs: self.events.record(*args, **kwargs),
+            tool_call_from_reflection=self._tool_call_from_reflection,
+            tool_retry_targets_current_skill=self._reflection_tool_retry_targets_current_skill,
+            retry_with_tool_call=self._retry_with_reflection_tool_call,
+            router_decision_from_reflection=self._router_decision_from_reflection,
+            retry_with_router_decision=self._retry_with_router_decision,
         )
-        if retry_router_decision:
-            retry_result = self._retry_with_router_decision(
-                request,
-                chat_session,
-                skills,
-                tools,
-                retry_router_decision,
-                model_config,
-                conversation_context,
-                stream_events,
-                memory_context,
-            )
-            return (*retry_result, True)
-
-        if retry_tool_call:
-            retry_result = self._retry_with_reflection_tool_call(
-                request,
-                chat_session,
-                active_skill,
-                router_decision,
-                retry_tool_call,
-                reflection.reason,
-                stream_events,
-                tools,
-                model_config,
-                conversation_context,
-                memory_context,
-            )
-            return (*retry_result, True)
-
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "reflection_retry_skipped",
-            {
-                "reason": reflection.reason,
-                "target_skill_id": reflection.target_skill_id,
-                "target_tool_name": reflection.target_tool_name,
-            },
-        )
-        return active_skill, router_decision, step_result, tool_result, False
 
     def _retry_with_reflection_tool_call(
         self,
@@ -3350,43 +3215,27 @@ class AgentLoop:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
-        retry_step_result = StepAgentResult(
-            tool_call=retry_tool_call,
-            next_step_id=chat_session.active_step_id,
-            is_step_completed=True,
-        )
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "reflection_retry_started",
-            {
-                "mode": "tool",
-                "reason": retry_reason,
-                "target_tool_name": retry_tool_call.name,
-            },
-        )
-        retry_step_result, retry_tool_result = self._execute_tool_action_cycle(
+        return LegacyReflectionCoordinator.retry_with_tool_call(
             request,
             chat_session,
             active_skill,
-            tools or [],
-            model_config,
-            retry_step_result,
+            router_decision,
+            retry_tool_call,
+            retry_reason,
             stream_events,
-            conversation_context=conversation_context,
-            memory_context=memory_context,
+            tools,
+            model_config,
+            conversation_context,
+            memory_context,
+            record_event=lambda *args, **kwargs: self.events.record(*args, **kwargs),
+            execute_tool_cycle=self._execute_tool_action_cycle,
         )
-        return active_skill, router_decision, retry_step_result, retry_tool_result
 
     def _reflection_tool_retry_targets_current_skill(
         self, reflection: ReflectionDecision, chat_session: ChatSession
     ) -> bool:
-        return bool(
-            reflection.target_tool_name
-            and (
-                not reflection.target_skill_id
-                or reflection.target_skill_id == chat_session.active_skill_id
-            )
+        return LegacyReflectionPolicy.retry_targets_current_skill(
+            reflection, chat_session
         )
 
     def _retry_with_router_decision(
@@ -3401,107 +3250,32 @@ class AgentLoop:
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "reflection_retry_started",
-            {
-                "mode": "skill",
-                "target_skill_id": router_decision.target_skill_id,
-                "target_step_id": router_decision.target_step_id,
-                "reason": router_decision.reason,
-            },
-        )
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "router_decision_created",
-            router_decision.model_dump(),
-        )
-
-        before_skill = chat_session.active_skill_id
-        before_step = chat_session.active_step_id
-        self.runtime.apply_decision(chat_session, router_decision)
-        state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-        if self._should_record_runtime_event_after_prune(
-            router_decision, chat_session, skills, state_pruned
-        ):
-            self._record_runtime_event(
-                request.tenant_id, chat_session, before_skill, before_step, router_decision
-            )
-        self.db.commit()
-        self.db.refresh(chat_session)
-
-        active_skill = self._get_active_skill(
-            request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
-        )
-        if stream_events is not None:
-            stream_events.append(
-                (
-                    "skill_state",
-                    self._skill_state_payload(
-                        chat_session,
-                        skills,
-                        self._runtime_stream_context(
-                            router_decision, before_skill, before_step, chat_session
-                        ),
-                    ),
-                )
-            )
-            stream_events.append(
-                (
-                    "status",
-                    {
-                        "phase": "stepping",
-                        "text": "正在思考",
-                        "active_skill_id": chat_session.active_skill_id,
-                        "active_step_id": chat_session.active_step_id,
-                    },
-                )
-            )
-
-        step_result = self._run_step_agent_with_context_repair(
+        return LegacyReflectionCoordinator.retry_with_router_decision(
             request,
             chat_session,
-            active_skill,
+            skills,
             tools,
-            model_config,
             router_decision,
-            memory_context=memory_context,
-            conversation_context=conversation_context,
-            stream_events=stream_events,
+            model_config,
+            conversation_context,
+            stream_events,
+            memory_context,
+            record_event=lambda *args, **kwargs: self.events.record(*args, **kwargs),
+            apply_runtime_decision=lambda session, decision: self.runtime.apply_decision(
+                session, decision
+            ),
+            drop_unavailable_state=self._drop_unavailable_skill_state,
+            should_record_runtime_event=self._should_record_runtime_event_after_prune,
+            record_runtime_event=self._record_runtime_event,
+            commit=lambda: self.db.commit(),
+            refresh=lambda session: self.db.refresh(session),
+            get_active_skill=self._get_active_skill,
+            skill_state_payload=self._skill_state_payload,
+            runtime_stream_context=self._runtime_stream_context,
+            run_step_with_context_repair=self._run_step_agent_with_context_repair,
+            execute_knowledge_cycle=self._execute_knowledge_query_cycle,
+            execute_tool_cycle=self._execute_tool_action_cycle,
         )
-        self.db.commit()
-        self.db.refresh(chat_session)
-
-        tool_result: ToolResult | None = None
-        if step_result.knowledge_query:
-            step_result = self._execute_knowledge_query_cycle(
-                request,
-                chat_session,
-                active_skill,
-                tools,
-                model_config,
-                step_result,
-                memory_context,
-                conversation_context,
-                stream_events,
-            )
-            self.db.commit()
-            self.db.refresh(chat_session)
-        if step_result.tool_call:
-            step_result, tool_result = self._execute_tool_action_cycle(
-                request,
-                chat_session,
-                active_skill,
-                tools,
-                model_config,
-                step_result,
-                stream_events,
-                conversation_context=conversation_context,
-                memory_context=memory_context,
-            )
-        return active_skill, router_decision, step_result, tool_result
 
     def _tool_loop_decision_payload(
         self,
@@ -4865,42 +4639,14 @@ class AgentLoop:
         previous_decision: RouterDecision,
         completed_skill_ids_this_turn: set[str] | None = None,
     ) -> RouterDecision | None:
-        if not reflection.target_skill_id:
-            return None
-        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
-        if (
-            reflection.target_skill_id in completed_skill_ids_this_turn
-            and chat_session.active_skill_id != reflection.target_skill_id
-        ):
-            self.events.record(
-                chat_session.tenant_id,
-                chat_session.id,
-                "reflection_retry_skipped_completed_task",
-                {
-                    "reason": reflection.reason,
-                    "target_skill_id": reflection.target_skill_id,
-                    "active_skill_id": chat_session.active_skill_id,
-                },
-            )
-            return None
-        target_skill = next(
-            (skill for skill in skills if skill.skill_id == reflection.target_skill_id),
-            None,
-        )
-        if not target_skill:
-            return None
-        decision = (
-            "continue_active"
-            if chat_session.active_skill_id == target_skill.skill_id
-            else "start_new_task"
-        )
-        return RouterDecision(
-            decision=decision,
-            target_skill_id=target_skill.skill_id,
-            target_step_id=reflection.target_step_id or self._first_step_id(target_skill),
-            confidence=0.7,
-            user_intent=previous_decision.user_intent,
-            reason=f"反思重试：{reflection.reason or '当前技能或工具可能不匹配用户诉求'}",
+        return LegacyReflectionPolicy.router_decision(
+            reflection,
+            chat_session,
+            skills,
+            previous_decision,
+            completed_skill_ids_this_turn,
+            record_event=lambda *args, **kwargs: self.events.record(*args, **kwargs),
+            first_step_id=self._first_step_id,
         )
 
     def _tool_call_from_reflection(
@@ -4910,30 +4656,15 @@ class AgentLoop:
         tools: list[Tool],
         user_message: str | None = None,
     ) -> ToolCall | None:
-        if not reflection.target_tool_name:
-            return None
-        tool = next(
-            (item for item in tools if item.enabled and item.name == reflection.target_tool_name),
-            None,
+        return LegacyReflectionPolicy.tool_call(
+            reflection,
+            chat_session,
+            tools,
+            user_message,
+            general_skill_tool_prefix=GENERAL_SKILL_TOOL_PREFIX,
+            build_arguments=self._build_tool_arguments_from_slots,
+            slot_has_value=self._slot_has_value,
         )
-        if not tool:
-            return None
-        if str(getattr(tool, "name", "") or "").startswith(GENERAL_SKILL_TOOL_PREFIX):
-            query = str(user_message or "").strip()
-            if not query:
-                return None
-            return ToolCall(name=tool.name, arguments={"query": query})
-        if (
-            chat_session.active_skill_id
-            and tool.allowed_skills_json
-            and chat_session.active_skill_id not in tool.allowed_skills_json
-        ):
-            return None
-        arguments = self._build_tool_arguments_from_slots(tool, chat_session.slots_json or {})
-        required = [str(field) for field in (tool.input_schema or {}).get("required", [])]
-        if any(not self._slot_has_value(arguments, field) for field in required):
-            return None
-        return ToolCall(name=tool.name, arguments=arguments)
 
     def _build_tool_arguments_from_slots(self, tool: Tool, slots: dict[str, Any]) -> dict[str, Any]:
         schema = tool.input_schema or {}
@@ -4960,7 +4691,12 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> bool:
-        return action_needs_reflection(router_decision, step_result, tool_result)
+        return LegacyReflectionPolicy.should_try(
+            router_decision,
+            step_result,
+            tool_result,
+            predicate=action_needs_reflection,
+        )
 
     def _first_step_id(self, skill: Skill) -> str | None:
         content = skill.content_json or {}
