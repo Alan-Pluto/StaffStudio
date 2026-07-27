@@ -43,6 +43,7 @@ import type {
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
+import { getChannelPresentation } from './channelPresentation';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { formatTime, type BadgeTone } from './scheduled-tasks/shared';
 
@@ -72,18 +73,12 @@ const DELIVERY_KIND_LABEL: Record<string, string> = {
   reaction_remove: '确认清理',
 };
 
-const WECHAT_COMMANDS: Array<{ command: string; description: string }> = [
+const CHANNEL_COMMANDS: Array<{ command: string; description: string }> = [
   { command: '/员工', description: '查看可调度员工' },
   { command: '/切换 <员工名> 或 /<员工名>', description: '切换当前员工' },
   { command: '/当前', description: '查看当前员工' },
   { command: '/帮助', description: '查看指令说明' },
 ];
-
-const CHANNEL_BLURB: Record<string, string> = {
-  wechat: '扫码接入，微信用户直接与数字员工对话。',
-  wecom: '填入企业微信智能机器人的凭证完成接入。',
-  feishu: '填入飞书应用凭证，通过长连接接入数字员工。',
-};
 
 const CAPABILITY_LABEL: Record<string, string> = {
   typing: '输入状态',
@@ -92,13 +87,14 @@ const CAPABILITY_LABEL: Record<string, string> = {
 function messageDisplay(
   msg: ChannelConversationMessageRead,
   conversation: ChannelConversationRead,
+  userLabel: string,
 ): { label: string; content: string } {
   if (msg.role === 'user') {
     if (conversation.is_group) {
       const match = msg.content.match(/^\[发送者:\s*([^\]]+)\]\n?/);
       if (match) return { label: match[1], content: msg.content.slice(match[0].length) };
     }
-    return { label: '用户', content: msg.content };
+    return { label: userLabel, content: msg.content };
   }
   if (msg.role === 'assistant') {
     return { label: conversation.agent_name || '员工', content: msg.content };
@@ -194,7 +190,9 @@ export default function ChannelsPage({
 
   const binding = bindings.find((item) => item.id === selectedId) || null;
   const channelIdentities = identityBindings.filter((item) => item.channel === binding?.channel);
-  const bindCodeChannelName = binding ? channelName(binding.channel) : '微信';
+  const bindCodeChannelName = binding
+    ? channelName(binding.channel)
+    : getChannelPresentation(createChannel).name;
   const selectedIdRef = useRef('');
 
   useEffect(() => {
@@ -535,7 +533,7 @@ export default function ChannelsPage({
   }
 
   function channelName(channel: string): string {
-    return metaFor(channel)?.name || (channel === 'wechat' ? '微信' : channel);
+    return getChannelPresentation(channel, metaFor(channel)?.name).name;
   }
 
   function setupKindFor(channel: string): string {
@@ -556,6 +554,9 @@ export default function ChannelsPage({
   const attentionBindings = bindings.filter(
     (item) => item.status === 'expired' || (item.status === 'active' && !item.connected),
   );
+  const activeChannel = binding
+    ? getChannelPresentation(binding.channel, metaFor(binding.channel)?.name)
+    : null;
   // bot_id / ilink_bot_id 是 DTO 顶层字段(后端不回传 config_json)
   const botId = binding?.ilink_bot_id || binding?.bot_id || binding?.app_id || '';
   const mountedAgents = binding?.agents || [];
@@ -620,7 +621,7 @@ export default function ChannelsPage({
       </div>
       {bindings.length === 0 && !loading ? (
         <div className="flex min-h-[200px] flex-col items-center justify-center gap-[12px] rounded-[14px] bg-[#f6f6f6] text-[13px] text-[#858b9c]">
-          <span>暂无渠道接入，接入后微信用户可通过斜杠指令在多个数字员工之间切换。</span>
+          <span>暂无渠道接入，接入后用户可通过斜杠指令在多个数字员工之间切换。</span>
           <UIButton onClick={openCreate} className={PRIMARY_BUTTON_CLASS}>
             接入渠道
           </UIButton>
@@ -712,7 +713,9 @@ export default function ChannelsPage({
               </span>
             )}
             {botId && (
-              <span className="truncate text-[12px] text-[#858b9c]">Bot ID：{botId}</span>
+              <span className="truncate text-[12px] text-[#858b9c]">
+                {activeChannel?.identifierLabel}：{botId}
+              </span>
             )}
           </div>
           <div className="flex items-center gap-[8px]">
@@ -767,10 +770,12 @@ export default function ChannelsPage({
         </div>
       </div>
 
-      <section aria-label="身份绑定">
+      <section aria-label={activeChannel ? `${activeChannel.name}身份绑定` : '身份绑定'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <IconAccount className="size-[14px] shrink-0" />
-          <span className="text-[14px] font-normal leading-none">身份绑定</span>
+          <span className="text-[14px] font-normal leading-none">
+            {activeChannel ? `${activeChannel.name}身份绑定` : '身份绑定'}
+          </span>
         </div>
         <div className="flex flex-col gap-[10px] rounded-[14px] border border-[#eef0f4] p-[16px]">
           {channelIdentities.length > 0 ? (
@@ -893,13 +898,15 @@ export default function ChannelsPage({
         )}
       </section>
 
-      <section aria-label="微信指令说明">
+      <section aria-label={activeChannel ? `${activeChannel.name}指令说明` : '指令说明'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <IconChat className="size-[14px] shrink-0" />
-          <span className="text-[14px] font-normal leading-none">微信指令说明</span>
+          <span className="text-[14px] font-normal leading-none">
+            {activeChannel ? `${activeChannel.name}指令说明` : '指令说明'}
+          </span>
         </div>
         <div className="flex flex-col gap-[8px] rounded-[14px] border border-[#eef0f4] p-[16px]">
-          {WECHAT_COMMANDS.map((item) => (
+          {CHANNEL_COMMANDS.map((item) => (
             <div key={item.command} className="flex flex-wrap items-baseline gap-[8px] text-[12px]">
               <code className="rounded-[6px] bg-[#f2f3f7] px-[8px] py-[3px] text-[#18181a]">
                 {item.command}
@@ -910,10 +917,12 @@ export default function ChannelsPage({
         </div>
       </section>
 
-      <section aria-label="对话记录">
+      <section aria-label={activeChannel ? `${activeChannel.name}对话记录` : '对话记录'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <IconChat className="size-[14px] shrink-0" />
-          <span className="text-[14px] font-normal leading-none">对话记录</span>
+          <span className="text-[14px] font-normal leading-none">
+            {activeChannel ? `${activeChannel.name}对话记录` : '对话记录'}
+          </span>
         </div>
         {activeConversation ? (
           <div className="flex flex-col gap-[12px] rounded-[14px] border border-[#eef0f4] p-[16px]">
@@ -937,7 +946,11 @@ export default function ChannelsPage({
             ) : (
               <div className="flex max-h-[480px] flex-col gap-[10px] overflow-y-auto pr-[4px]">
                 {messages.map((msg) => {
-                  const shown = messageDisplay(msg, activeConversation);
+                  const shown = messageDisplay(
+                    msg,
+                    activeConversation,
+                    activeChannel?.userLabel || '用户',
+                  );
                   return (
                     <div key={msg.id} className="flex flex-col gap-[4px]">
                       <span className="text-[11px] text-[#a0a6b8]">
@@ -1019,10 +1032,12 @@ export default function ChannelsPage({
         )}
       </section>
 
-      <section aria-label="投递日志">
+      <section aria-label={activeChannel ? `${activeChannel.name}投递日志` : '投递日志'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <IconAlignJustify className="size-[14px] shrink-0" />
-          <span className="text-[14px] font-normal leading-none">投递日志</span>
+          <span className="text-[14px] font-normal leading-none">
+            {activeChannel ? `${activeChannel.name}投递日志` : '投递日志'}
+          </span>
         </div>
         {deliveryDays.length === 0 ? (
           <DataTable
@@ -1106,7 +1121,9 @@ export default function ChannelsPage({
           className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[480px]"
         >
           <DialogTitle className="text-[14px] font-normal leading-none text-[#757f9c]">
-            {createStep === 'channel' ? '选择渠道' : '选择默认员工'}
+            {createStep === 'channel'
+              ? '选择渠道'
+              : `选择${getChannelPresentation(createChannel, metaFor(createChannel)?.name).name}默认员工`}
           </DialogTitle>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {createStep === 'channel' ? (
@@ -1148,7 +1165,7 @@ export default function ChannelsPage({
                         ))}
                       </div>
                       <span className="text-[12px] text-[#858b9c]">
-                        {CHANNEL_BLURB[meta.channel] || ''}
+                        {getChannelPresentation(meta.channel, meta.name).blurb}
                       </span>
                     </article>
                   ))}
@@ -1199,7 +1216,7 @@ export default function ChannelsPage({
                 disabled={!createAgentId || creating}
                 className={PRIMARY_BUTTON_CLASS}
               >
-                创建
+                {`创建${getChannelPresentation(createChannel, metaFor(createChannel)?.name).name}接入`}
               </UIButton>
             )}
           </div>
@@ -1261,8 +1278,8 @@ export default function ChannelsPage({
         open={unbindOpen}
         onOpenChange={setUnbindOpen}
         loading={unbinding}
-        title="断开微信接入？"
-        description="断开后微信 bot 将离线，需要重新扫码才能恢复；对话记录保留。确定断开接入吗？"
+        title={activeChannel ? `断开${activeChannel.name}接入？` : '断开渠道接入？'}
+        description={activeChannel?.disconnectDescription || '断开后对话记录保留。确定断开接入吗？'}
         confirmText="断开接入"
         onConfirm={() => void confirmUnbind()}
       />
