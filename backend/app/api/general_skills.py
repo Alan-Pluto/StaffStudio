@@ -1,17 +1,16 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import queue
 import re
 import threading
 import time
 import zipfile
-import base64
-import binascii
 from collections.abc import Iterator
 from html import unescape
 from io import BytesIO
-from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -33,6 +32,10 @@ from app.agents.branching import (
     require_overall_agent,
     user_creator_metadata,
 )
+from app.capabilities.local_general_skill import (
+    GeneralSkillRuntimeSnapshot,
+    local_runtime_snapshot,
+)
 from app.db import get_session
 from app.db.models import AgentResourceBinding, GeneralSkill, ModelConfig, User, utc_now
 from app.general_skills import (
@@ -43,8 +46,8 @@ from app.general_skills import (
     GeneralSkillRunRequest,
     GeneralSkillRunResponse,
 )
-from app.general_skills.schema import GeneralSkillFile
 from app.general_skills.runner import GeneralSkillRunner
+from app.general_skills.schema import GeneralSkillFile
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
 from app.security.permissions import (
@@ -598,7 +601,11 @@ def run_general_skill(
     _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     return GeneralSkillRunner().run(
-        skill, request.query, model_config, current_user.id, request.max_attempts
+        _general_skill_snapshot(skill),
+        request.query,
+        model_config,
+        current_user.id,
+        request.max_attempts,
     )
 
 
@@ -799,20 +806,8 @@ def _get_request_model(
     return _model_runtime_config(db, tenant_id, model_config)
 
 
-def _general_skill_snapshot(row: GeneralSkill) -> SimpleNamespace:
-    return SimpleNamespace(
-        tenant_id=row.tenant_id,
-        slug=row.slug,
-        name=row.name,
-        description=row.description,
-        homepage=row.homepage,
-        skill_markdown=row.skill_markdown,
-        skill_files_json=_skill_files_or_markdown(row),
-        metadata_json=row.metadata_json or {},
-        permissions_json=row.permissions_json or {},
-        runtime_config_json=row.runtime_config_json or {},
-        status=row.status,
-    )
+def _general_skill_snapshot(row: GeneralSkill) -> GeneralSkillRuntimeSnapshot:
+    return local_runtime_snapshot(row)
 
 
 def _model_runtime_config(db: Session, tenant_id: str, row: ModelConfig):

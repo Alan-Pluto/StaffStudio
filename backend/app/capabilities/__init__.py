@@ -1,8 +1,8 @@
 """Typed ports for externally provided Agent capabilities.
 
 This package intentionally keeps Knowledge, Scene Skill and General Skill
-contracts separate.  The legacy AgentLoop is not coupled to these ports yet;
-adapters can be introduced behind the registry without changing its behavior.
+contracts separate. Local adapters preserve the existing behavior while
+allowing startup-time Provider implementations to replace the content source.
 """
 
 from app.capabilities.contracts import (
@@ -20,6 +20,13 @@ from app.capabilities.contracts import (
     SceneSkillDefinition,
 )
 from app.capabilities.errors import CapabilityErrorInfo, CapabilityProviderError
+from app.capabilities.local_general_skill import (
+    GeneralSkillRuntimeSnapshot,
+    LocalGeneralSkillCatalog,
+    local_runtime_snapshot,
+    resource_ref_from_row,
+    runtime_snapshot_from_package,
+)
 from app.capabilities.local_knowledge import LocalKnowledgeRuntime
 from app.capabilities.local_registry import build_local_capability_registry
 from app.capabilities.registry import (
@@ -44,12 +51,17 @@ __all__ = [
     "GeneralSkillFile",
     "GeneralSkillPackage",
     "GeneralSkillResourceRef",
+    "GeneralSkillRuntimeSnapshot",
     "KnowledgeRuntime",
     "KnowledgeScope",
     "KnowledgeSearchQuery",
     "KnowledgeSearchResult",
+    "LocalGeneralSkillCatalog",
     "LocalKnowledgeRuntime",
     "SceneSkillCatalog",
     "SceneSkillDefinition",
     "build_local_capability_registry",
+    "local_runtime_snapshot",
+    "resource_ref_from_row",
+    "runtime_snapshot_from_package",
 ]

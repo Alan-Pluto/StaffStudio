@@ -8,13 +8,18 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Any
 
 from app import paths
 from app.db.models import GeneralSkill, ModelConfig
+from app.general_skills.runtime_env import (
+    GeneralSkillRuntimeError,
+    ensure_runtime_python,
+    runtime_environment,
+)
 from app.general_skills.schema import (
     GeneralSkillExecutionPlan,
     GeneralSkillExecutionReview,
@@ -22,12 +27,10 @@ from app.general_skills.schema import (
     GeneralSkillRunResponse,
     GeneralSkillSelection,
 )
-from app.general_skills.runtime_env import GeneralSkillRuntimeError, ensure_runtime_python, runtime_environment
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import snapshot_model_config
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.observability.spans import llm_operation
-
 
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
 SELECTOR_PROMPT = PROMPT_DIR / "general_skill_selector_prompt.md"
@@ -798,10 +801,14 @@ def _runtime_label(runtime: str) -> str:
 
 def _skill_files(skill: GeneralSkill) -> list[dict[str, Any]]:
     raw_files = getattr(skill, "skill_files_json", None)
-    files = raw_files if isinstance(raw_files, list) else []
+    files = (
+        raw_files
+        if isinstance(raw_files, Sequence) and not isinstance(raw_files, (str, bytes))
+        else []
+    )
     normalized: list[dict[str, Any]] = []
     for raw_file in files:
-        if not isinstance(raw_file, dict):
+        if not isinstance(raw_file, Mapping):
             continue
         path = _safe_package_path(str(raw_file.get("path") or ""))
         content = str(raw_file.get("content") or "")

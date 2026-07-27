@@ -20,6 +20,13 @@ from app.agents.branching import (
     visible_skill,
     visible_tool_rows,
 )
+from app.capabilities.contracts import CapabilityContext, GeneralSkillCatalog
+from app.capabilities.local_general_skill import (
+    GeneralSkillRuntimeSnapshot,
+    LocalGeneralSkillCatalog,
+    resource_ref_from_row,
+    runtime_snapshot_from_package,
+)
 from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
@@ -173,7 +180,11 @@ class PreparedTurn:
 
 
 class AgentLoop:
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        general_skill_catalog: GeneralSkillCatalog | None = None,
+    ) -> None:
         self.db = db
         self.events = EventLog(db)
         self.router = Router()
@@ -183,6 +194,7 @@ class AgentLoop:
         self.response_generator = ResponseGenerator()
         self.general_skill_selector = GeneralSkillSelector()
         self.general_skill_runner = GeneralSkillRunner()
+        self.general_skill_catalog = general_skill_catalog or LocalGeneralSkillCatalog(db)
         self.tool_executor = ToolExecutor(db)
         self.memory = MemoryService(db)
         self._validated_general_skill_calls: set[tuple[str, str, str]] = set()
@@ -493,8 +505,11 @@ class AgentLoop:
                 user_message_id,
             ),
         )
+        skill_snapshot = self._general_skill_runtime_snapshot(
+            request, chat_session, skill, user_message_id
+        )
         run_response = self.general_skill_runner.run(
-            skill,
+            skill_snapshot,
             request.message,
             model_config,
             request.user_id,
@@ -722,17 +737,8 @@ class AgentLoop:
             user_message_id=user_message_id,
         )
         general_skill_events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
-        skill_snapshot = SimpleNamespace(
-            slug=skill.slug,
-            name=skill.name,
-            description=skill.description,
-            homepage=skill.homepage,
-            skill_markdown=skill.skill_markdown,
-            skill_files_json=skill.skill_files_json or [],
-            metadata_json=skill.metadata_json or {},
-            permissions_json=skill.permissions_json or {},
-            runtime_config_json=skill.runtime_config_json or {},
-            status=skill.status,
+        skill_snapshot = self._general_skill_runtime_snapshot(
+            request, chat_session, skill, user_message_id
         )
         model_snapshot = model_config
 
@@ -4518,7 +4524,13 @@ class AgentLoop:
             model_resolver=self._get_request_model,
             precondition_error_type=AgentLoopPreconditionError,
             validator=self._validate_general_skill_tool_match,
-            runner=lambda *args, **kwargs: self.general_skill_runner.run(*args, **kwargs),
+            runner=lambda selected_skill, *args, **kwargs: self.general_skill_runner.run(
+                self._general_skill_runtime_snapshot(
+                    request, chat_session, selected_skill
+                ),
+                *args,
+                **kwargs,
+            ),
         )
 
     def _validate_general_skill_tool_match(
@@ -4959,6 +4971,38 @@ class AgentLoop:
 
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
         return visible_published_skills(self.db, tenant_id, agent_id)
+
+    def _general_skill_runtime_snapshot(
+        self,
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        skill: GeneralSkill,
+        turn_id: str | None = None,
+    ) -> GeneralSkillRuntimeSnapshot:
+        catalog = getattr(self, "general_skill_catalog", None)
+        if catalog is None:
+            catalog = LocalGeneralSkillCatalog(self.db)
+            self.general_skill_catalog = catalog
+        context = CapabilityContext(
+            request_id=new_id("req"),
+            tenant_id=request.tenant_id,
+            agent_id=str(chat_session.agent_id or request.agent_id or "legacy-overall"),
+            user_id=str(request.user_id or chat_session.user_id or "anonymous"),
+            session_id=chat_session.id,
+            turn_id=str(turn_id or request.client_turn_id or new_id("turn")),
+            channel=request.channel,
+        )
+        resource_ref = resource_ref_from_row(
+            skill,
+            catalog_binding_id=catalog.provider_id,
+        )
+        package = catalog.get_package(context, resource_ref)
+        if package is None:
+            raise AgentLoopPreconditionError(
+                "general_skill_content_unavailable",
+                "通用技能内容不可用或运行前已发生变化，请重试。",
+            )
+        return runtime_snapshot_from_package(skill, package)
 
     def _list_published_general_skills(
         self, tenant_id: str, agent_id: str | None = None
