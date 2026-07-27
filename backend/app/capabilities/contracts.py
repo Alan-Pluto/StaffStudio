@@ -14,7 +14,7 @@ ExtensionMap: TypeAlias = Mapping[str, JsonObject]
 
 @dataclass(frozen=True)
 class CapabilityContext:
-    """Request-scoped metadata shared by all capability services."""
+    """Legacy Core context with stable Provider-boundary aliases."""
 
     request_id: str
     tenant_id: str
@@ -27,6 +27,16 @@ class CapabilityContext:
     deadline_at: datetime | None = None
     attempt: int = 1
     idempotency_key: str | None = None
+
+    @property
+    def thread_id(self) -> str:
+        """Provider-facing name for the persisted conversation/session ID."""
+        return self.session_id
+
+    @property
+    def run_id(self) -> str:
+        """Provider-facing name for the current AgentRun/turn ID."""
+        return self.turn_id
 
 
 @dataclass(frozen=True)

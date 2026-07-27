@@ -17,7 +17,23 @@
     "context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["request_id", "tenant_id", "session_id", "turn_id", "channel"],
+      "required": ["channel"],
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": ["thread_id", "run_id", "user_id", "agent_id"],
+              "properties": {
+                "user_id": {"type": "string", "minLength": 1},
+                "agent_id": {"type": "string", "minLength": 1}
+              }
+            },
+            {
+              "required": ["request_id", "tenant_id", "session_id", "turn_id"]
+            }
+          ]
+        }
+      ],
       "properties": {
         "request_id": {"type": "string", "minLength": 1},
         "tenant_id": {"type": "string", "minLength": 1},
@@ -25,6 +41,8 @@
         "user_id": {"type": ["string", "null"]},
         "session_id": {"type": "string", "minLength": 1},
         "turn_id": {"type": "string", "minLength": 1},
+        "thread_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
         "channel": {"type": "string", "minLength": 1},
         "trace_id": {"type": ["string", "null"]},
         "deadline_at": {"type": ["string", "null"], "format": "date-time"},

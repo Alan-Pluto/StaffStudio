@@ -38,6 +38,20 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
     assert snapshot.snapshot_id
 
 
+def test_legacy_context_exposes_provider_boundary_id_aliases() -> None:
+    context = CapabilityContext(
+        request_id="req-1",
+        tenant_id="tenant-1",
+        agent_id="agent-1",
+        user_id="user-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        channel="web",
+    )
+    assert context.thread_id == "session-1"
+    assert context.run_id == "turn-1"
+
+
 def test_snapshot_only_contains_requested_capabilities() -> None:
     registry = CapabilityRegistry()
     registry.register(CapabilityBinding("knowledge.search", "local", "local-dev", "knowledge.v1", object()))

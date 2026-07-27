@@ -30,6 +30,29 @@ def test_knowledge_request_schema_rejects_unknown_top_level_fields() -> None:
     assert list(validator.iter_errors(invalid))
 
 
+def test_knowledge_request_schema_accepts_minimal_provider_context() -> None:
+    schema = load_schema("knowledge.search.request.v1.json")
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    valid = {
+        "context": {
+            "thread_id": "thread-1",
+            "run_id": "run-1",
+            "user_id": "user-1",
+            "agent_id": "agent-1",
+            "channel": "web",
+        },
+        "query": "policy",
+    }
+    assert not list(validator.iter_errors(valid))
+    missing_agent = {
+        **valid,
+        "context": {
+            key: value for key, value in valid["context"].items() if key != "agent_id"
+        },
+    }
+    assert list(validator.iter_errors(missing_agent))
+
+
 def test_knowledge_result_schema_allows_namespaced_extensions_only() -> None:
     schema = load_schema("knowledge.search.result.v1.json")
     validator = Draft202012Validator(schema)
