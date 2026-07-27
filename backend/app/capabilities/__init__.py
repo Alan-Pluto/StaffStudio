@@ -22,6 +22,7 @@ from app.capabilities.contracts import (
     SkillExecutionEvent,
     SkillExecutionEventPage,
 )
+from app.capabilities.errors import CapabilityErrorInfo, CapabilityProviderError
 from app.capabilities.local_knowledge import LocalKnowledgeRuntime
 from app.capabilities.registry import (
     CapabilityBinding,
@@ -33,6 +34,8 @@ from app.capabilities.registry import (
 __all__ = [
     "CapabilityBinding",
     "CapabilityContext",
+    "CapabilityErrorInfo",
+    "CapabilityProviderError",
     "CapabilityRegistry",
     "CapabilitySnapshot",
     "CitationDetail",
