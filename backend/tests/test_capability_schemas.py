@@ -3,6 +3,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from app.capabilities.errors import CapabilityErrorInfo
+
 SCHEMA_DIR = Path(__file__).parents[1] / "app" / "capabilities" / "schemas"
 
 
@@ -47,3 +49,15 @@ def test_provider_error_schema_requires_retryability() -> None:
     schema = load_schema("provider.error.v1.json")
     validator = Draft202012Validator(schema)
     assert list(validator.iter_errors({"error_code": "X"}))
+
+
+def test_python_provider_error_has_one_wire_error_code_mapping() -> None:
+    schema = load_schema("provider.error.v1.json")
+    validator = Draft202012Validator(schema)
+    payload = CapabilityErrorInfo(
+        code="KNOWLEDGE_TIMEOUT",
+        message="timeout",
+        retryable=True,
+        request_id="req-1",
+    ).to_payload()
+    assert not list(validator.iter_errors(payload))

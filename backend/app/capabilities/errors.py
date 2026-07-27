@@ -12,6 +12,17 @@ class CapabilityErrorInfo:
     provider_id: str | None = None
     extensions: dict[str, object] | None = None
 
+    def to_payload(self) -> dict[str, object]:
+        """Map Python ``code`` to the wire contract's ``error_code`` once."""
+        return {
+            "error_code": self.code,
+            "message": self.message,
+            "retryable": self.retryable,
+            "request_id": self.request_id,
+            "provider_id": self.provider_id,
+            "extensions": self.extensions or {},
+        }
+
 
 class CapabilityProviderError(RuntimeError):
     """Stable provider failure; callers must branch on code/retryable."""
