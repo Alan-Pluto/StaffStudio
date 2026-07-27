@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.capabilities.local_registry import (
     LOCAL_KNOWLEDGE_CONFIG_REVISION,
     LOCAL_KNOWLEDGE_DEPLOYMENT,
@@ -6,7 +8,9 @@ from app.capabilities.local_registry import (
 
 
 def test_local_registry_pins_all_knowledge_operations_to_one_deployment() -> None:
-    registry = build_local_capability_registry(db=object(), service_factory=object)
+    registry = build_local_capability_registry(
+        db=object(), model_config=SimpleNamespace(id="model-1", config_revision=3), service_factory=object
+    )
     snapshot = registry.snapshot(
         {"knowledge.scopes", "knowledge.search", "knowledge.citation"},
         supported_contracts={
@@ -20,7 +24,7 @@ def test_local_registry_pins_all_knowledge_operations_to_one_deployment() -> Non
         LOCAL_KNOWLEDGE_DEPLOYMENT
     }
     assert {binding.config_revision for binding in snapshot.durable_bindings} == {
-        LOCAL_KNOWLEDGE_CONFIG_REVISION
+        f"{LOCAL_KNOWLEDGE_CONFIG_REVISION}:model-1:3"
     }
     restored = registry.rehydrate(snapshot.durable_bindings[0])
     assert restored.provider_id == "local_knowledge"
@@ -36,7 +40,7 @@ def test_local_registry_rejects_retired_config_revision() -> None:
         provider_deployment_id=durable.provider_deployment_id,
         service_contract_version=durable.service_contract_version,
         operation_versions=durable.operation_versions,
-        config_revision="retired-v0",
+        config_revision="legacy-local-v1:retired-v0",
         resolution_reason=durable.resolution_reason,
     )
     try:
