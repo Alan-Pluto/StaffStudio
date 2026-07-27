@@ -50,6 +50,14 @@ class KnowledgeSearchQuery:
 
 
 @dataclass(frozen=True)
+class KnowledgeScope:
+    scope_id: str
+    name: str
+    version: str | None = None
+    metadata: Mapping[str, JsonValue] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class KnowledgeHit:
     hit_id: str
     content: str
@@ -185,6 +193,8 @@ class SkillExecutionResult:
 
 class KnowledgeRuntime(Protocol):
     provider_id: str
+
+    def list_scopes(self, context: CapabilityContext) -> Sequence[KnowledgeScope]: ...
 
     def search(self, context: CapabilityContext, request: KnowledgeSearchQuery) -> KnowledgeSearchResult: ...
 
