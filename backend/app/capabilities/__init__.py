@@ -22,6 +22,7 @@ from app.capabilities.contracts import (
     SkillExecutionEvent,
     SkillExecutionEventPage,
 )
+from app.capabilities.local_knowledge import LocalKnowledgeRuntime
 from app.capabilities.registry import (
     CapabilityBinding,
     CapabilityRegistry,
@@ -42,6 +43,7 @@ __all__ = [
     "KnowledgeRuntime",
     "KnowledgeSearchQuery",
     "KnowledgeSearchResult",
+    "LocalKnowledgeRuntime",
     "SceneSkillCatalog",
     "SceneSkillDefinition",
     "SkillArtifact",
