@@ -27,6 +27,7 @@ from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancel
 from app.core.conversation_context import build_conversation_context
 from app.core.human_handoff_service import HumanHandoffService
 from app.core.legacy_conversation_projection import LegacyConversationProjection
+from app.core.legacy_general_skill_action import LegacyGeneralSkillAction
 from app.core.legacy_graph_rules import LegacyGraphRules
 from app.core.legacy_knowledge_action import (
     KNOWLEDGE_RESULTS_CACHE as _KNOWLEDGE_RESULTS_CACHE,
@@ -4740,135 +4741,20 @@ class AgentLoop:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> ToolResult:
-        slug = tool_call.name.removeprefix(GENERAL_SKILL_TOOL_PREFIX).strip()
-        if not slug:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data=None,
-                error=ToolError(code="INVALID_GENERAL_SKILL", message="通用技能名称为空。"),
-            )
-        skill = next(
-            (
-                item
-                for item in self._list_published_general_skills(request.tenant_id, agent_id)
-                if item.slug == slug
-            ),
-            None,
-        )
-        if not skill:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data=None,
-                error=ToolError(code="GENERAL_SKILL_NOT_FOUND", message="通用技能不存在或未发布。"),
-            )
-        try:
-            model_config = self._get_request_model(request, agent_id)
-        except AgentLoopPreconditionError as exc:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data=None,
-                error=ToolError(code=exc.code.upper(), message=exc.message),
-            )
-        if not model_config:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data=None,
-                error=ToolError(code="MISSING_MODEL_CONFIG", message="没有默认模型配置。"),
-            )
-        query = str(tool_call.arguments.get("query") or request.message).strip()
-        guard_result = self._validate_general_skill_tool_match(
+        return LegacyGeneralSkillAction(getattr(self, "events", None)).execute_tool_call(
             request,
             chat_session,
             tool_call,
-            skill,
-            query,
-            model_config,
             agent_id,
+            stream_events,
             conversation_context,
             memory_context,
-        )
-        if guard_result is not None:
-            return guard_result
-        emitted_trace_keys: set[str] = set()
-
-        def trace_key(trace_item: dict[str, Any]) -> str:
-            return json.dumps(trace_item, ensure_ascii=False, sort_keys=True, default=str)
-
-        def emit_general_skill_trace(trace_item: dict[str, Any]) -> None:
-            emitted_trace_keys.add(trace_key(trace_item))
-            payload: dict[str, object] = {
-                "skill_slug": skill.slug,
-                "skill_name": skill.name,
-                **trace_item,
-            }
-            self.events.record(request.tenant_id, chat_session.id, "general_skill_trace", payload)
-            if stream_events is not None:
-                stream_events.append(("general_skill_trace", payload))
-
-        def trace_sink(trace_item: dict[str, Any]) -> None:
-            emit_general_skill_trace(trace_item)
-
-        try:
-            response = self.general_skill_runner.run(
-                skill,
-                query,
-                model_config,
-                request.user_id,
-                event_sink=trace_sink,
-                conversation_context=conversation_context,
-                memory_context=memory_context,
-            )
-        except Exception as exc:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data=None,
-                error=ToolError(code="GENERAL_SKILL_EXECUTION_ERROR", message=str(exc)),
-            )
-        for trace_item in response.execution_trace:
-            if trace_key(trace_item) not in emitted_trace_keys:
-                emit_general_skill_trace(trace_item)
-        structured = (
-            response.structured_result if isinstance(response.structured_result, dict) else {}
-        )
-        success = structured.get("success")
-        is_success = True if success is None else bool(success)
-        finished_payload: dict[str, object] = {
-            "skill_slug": response.skill_slug,
-            "success": is_success,
-            "stdout_preview": response.stdout[:600],
-            "stderr_preview": response.stderr[:600],
-            "structured_result": response.structured_result,
-            "tool_call": tool_call.model_dump(mode="json"),
-        }
-        self.events.record(
-            request.tenant_id, chat_session.id, "general_skill_run_finished", finished_payload
-        )
-        if stream_events is not None:
-            stream_events.append(("general_skill_run_finished", finished_payload))
-        data = {
-            "skill_slug": response.skill_slug,
-            "reply": response.reply,
-            "structured_result": response.structured_result,
-            "stdout": response.stdout,
-            "stderr": response.stderr,
-            "generated_code": response.generated_code,
-            "execution_trace": response.execution_trace,
-        }
-        if is_success:
-            return ToolResult(tool_name=tool_call.name, success=True, data=data, error=None)
-        return ToolResult(
-            tool_name=tool_call.name,
-            success=False,
-            data=data,
-            error=ToolError(
-                code=str(structured.get("error") or "GENERAL_SKILL_FAILED"),
-                message=str(structured.get("message") or response.reply or "通用技能执行失败。"),
-            ),
+            tool_prefix=GENERAL_SKILL_TOOL_PREFIX,
+            list_skills=self._list_published_general_skills,
+            model_resolver=self._get_request_model,
+            precondition_error_type=AgentLoopPreconditionError,
+            validator=self._validate_general_skill_tool_match,
+            runner=lambda *args, **kwargs: self.general_skill_runner.run(*args, **kwargs),
         )
 
     def _validate_general_skill_tool_match(
@@ -4883,71 +4769,21 @@ class AgentLoop:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> ToolResult | None:
-        call_key = self._general_skill_call_key(
-            chat_session.id,
-            tool_call.name,
+        return LegacyGeneralSkillAction(getattr(self, "events", None)).validate_tool_match(
+            request,
+            chat_session,
+            tool_call,
+            requested_skill,
             query,
-        )
-        if call_key in self._validated_general_skill_calls:
-            self._validated_general_skill_calls.discard(call_key)
-            return None
-        if not query:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data={
-                    "requested_slug": requested_skill.slug,
-                    "selected_slug": None,
-                    "reason": "通用技能调用缺少自然语言任务。",
-                },
-                error=ToolError(
-                    code="GENERAL_SKILL_MISMATCH", message="通用技能调用缺少自然语言任务。"
-                ),
-            )
-        candidates = self._list_published_general_skills(request.tenant_id, agent_id)
-        if not candidates:
-            return ToolResult(
-                tool_name=tool_call.name,
-                success=False,
-                data={
-                    "requested_slug": requested_skill.slug,
-                    "selected_slug": None,
-                    "reason": "当前员工没有可用通用技能。",
-                },
-                error=ToolError(
-                    code="GENERAL_SKILL_NOT_FOUND", message="当前员工没有可用通用技能。"
-                ),
-            )
-        try:
-            selection = self.general_skill_selector.decide(
-                query,
-                candidates,
-                model_config,
-                conversation_context,
-                memory_context,
-            )
-        except LLMError:
-            return None
-        selected_slug = selection.selected_slug if selection.use_general_skill else None
-        if selected_slug == requested_skill.slug:
-            return None
-        payload = {
-            "requested_slug": requested_skill.slug,
-            "selected_slug": selected_slug,
-            "reason": selection.reason,
-            "query": query,
-            "tool_call": tool_call.model_dump(mode="json"),
-        }
-        self.events.record(
-            request.tenant_id, chat_session.id, "general_skill_guard_rejected", payload
-        )
-        return ToolResult(
-            tool_name=tool_call.name,
-            success=False,
-            data=payload,
-            error=ToolError(
-                code="GENERAL_SKILL_MISMATCH",
-                message="通用技能与当前子任务不匹配，已取消调用。",
+            model_config,
+            agent_id,
+            conversation_context,
+            memory_context,
+            validated_calls=self._validated_general_skill_calls,
+            call_key=self._general_skill_call_key,
+            list_skills=self._list_published_general_skills,
+            selector=lambda *args, **kwargs: self.general_skill_selector.decide(
+                *args, **kwargs
             ),
         )
 
@@ -4957,7 +4793,7 @@ class AgentLoop:
         tool_name: str,
         query: str,
     ) -> tuple[str, str, str]:
-        return session_id, tool_name.strip(), " ".join(query.split())
+        return LegacyGeneralSkillAction.call_key(session_id, tool_name, query)
 
     def _advance_after_successful_tool(
         self,

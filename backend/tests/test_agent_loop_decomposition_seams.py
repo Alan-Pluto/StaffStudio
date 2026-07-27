@@ -4,7 +4,7 @@ import app.core.agent_loop as agent_loop_module
 from app.core.agent_loop import AgentLoop
 from app.core.human_handoff_service import HumanHandoffService
 from app.core.legacy_tool_action import LegacyToolAction
-from app.db.models import ChatSession, Skill, Tool
+from app.db.models import ChatSession, GeneralSkill, ModelConfig, Skill, Tool
 from app.knowledge.schema import KnowledgeSearchResponse
 from app.session.session_schema import (
     AwaitingInput,
@@ -276,3 +276,56 @@ def test_knowledge_action_preserves_agent_loop_service_factory_seam(monkeypatch)
 
     assert loop._knowledge_items_for_message("tenant", "agent", "question") is None
     assert created == [loop.db]
+
+
+def test_general_skill_early_returns_do_not_resolve_runner_or_events(monkeypatch) -> None:
+    loop = _loop()
+    monkeypatch.setattr(loop, "_list_published_general_skills", lambda *args: [])
+    request = ChatTurnRequest(tenant_id="tenant", message="test")
+    session = ChatSession(id="session", tenant_id="tenant")
+
+    invalid = loop._execute_general_skill_tool_call(
+        request,
+        session,
+        ToolCall(name="general_skill.", arguments={}),
+        None,
+    )
+    missing = loop._execute_general_skill_tool_call(
+        request,
+        session,
+        ToolCall(name="general_skill.missing", arguments={}),
+        None,
+    )
+
+    assert invalid.error is not None
+    assert invalid.error.code == "INVALID_GENERAL_SKILL"
+    assert missing.error is not None
+    assert missing.error.code == "GENERAL_SKILL_NOT_FOUND"
+
+
+def test_general_skill_guard_early_return_does_not_resolve_selector_or_events(
+    monkeypatch,
+) -> None:
+    loop = _loop()
+    loop._validated_general_skill_calls = set()
+    monkeypatch.setattr(loop, "_list_published_general_skills", lambda *args: [])
+    skill = GeneralSkill(
+        tenant_id="tenant",
+        slug="weather",
+        name="Weather",
+        version="1.0.0",
+    )
+
+    result = loop._validate_general_skill_tool_match(
+        ChatTurnRequest(tenant_id="tenant", message=""),
+        ChatSession(id="session", tenant_id="tenant"),
+        ToolCall(name="general_skill.weather", arguments={}),
+        skill,
+        "",
+        ModelConfig(tenant_id="tenant", name="model", model="test"),
+        None,
+    )
+
+    assert result is not None
+    assert result.error is not None
+    assert result.error.code == "GENERAL_SKILL_MISMATCH"
