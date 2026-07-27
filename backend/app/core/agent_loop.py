@@ -40,6 +40,7 @@ from app.core.legacy_reflection_coordinator import (
     LegacyReflectionPolicy,
 )
 from app.core.legacy_tool_action import LegacyToolAction, LegacyToolActionCallbacks
+from app.core.legacy_turn_finalizer import LegacyTurnFinalizer
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
     FALLBACK_REPLY,
@@ -2475,30 +2476,19 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> ExecutionFinalizeState:
-        requested_handoff = router_decision.decision == "handoff_human" or step_result.handoff
-        if requested_handoff:
-            if self._current_step_allows_human_handoff(active_skill, chat_session.active_step_id):
-                self._create_human_handoff_request(
-                    tenant_id, chat_session, active_skill, step_result
-                )
-                return "handoff"
-            else:
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "human_handoff_ignored",
-                    {
-                        "reason": "current_step_does_not_declare_handoff",
-                        "active_skill_id": chat_session.active_skill_id,
-                        "active_step_id": chat_session.active_step_id,
-                        "router_decision": router_decision.decision,
-                        "step_handoff": step_result.handoff,
-                    },
-                )
-        if self._should_complete_skill(active_skill, chat_session, step_result, tool_result):
-            self._complete_active_skill(tenant_id, chat_session, active_skill, "step_completed")
-            return "completed"
-        return "continued"
+        return LegacyTurnFinalizer.finalize(
+            tenant_id,
+            chat_session,
+            active_skill,
+            router_decision,
+            step_result,
+            tool_result,
+            current_step_allows_handoff=self._current_step_allows_human_handoff,
+            create_handoff=self._create_human_handoff_request,
+            record_event=self.events.record,
+            should_complete=self._should_complete_skill,
+            complete_skill=self._complete_active_skill,
+        )
 
     def _current_step_allows_human_handoff(
         self, skill: Skill | None, active_step_id: str | None
