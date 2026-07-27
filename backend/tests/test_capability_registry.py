@@ -38,7 +38,7 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
     assert snapshot.snapshot_id
 
 
-def test_legacy_context_exposes_provider_boundary_id_aliases() -> None:
+def test_legacy_context_keeps_thread_alias_and_distinct_run_identity() -> None:
     context = CapabilityContext(
         request_id="req-1",
         tenant_id="tenant-1",
@@ -47,9 +47,11 @@ def test_legacy_context_exposes_provider_boundary_id_aliases() -> None:
         session_id="session-1",
         turn_id="turn-1",
         channel="web",
+        run_id="run-1",
     )
     assert context.thread_id == "session-1"
-    assert context.run_id == "turn-1"
+    assert context.turn_id == "turn-1"
+    assert context.run_id == "run-1"
 
 
 def test_snapshot_only_contains_requested_capabilities() -> None:
