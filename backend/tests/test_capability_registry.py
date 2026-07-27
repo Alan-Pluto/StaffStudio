@@ -22,7 +22,7 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
     registry = CapabilityRegistry()
     first = FakeKnowledge()
     registry.register(
-        CapabilityBinding("knowledge.search", "local_knowledge", "knowledge.v1", first)
+        CapabilityBinding("knowledge.search", "local_knowledge", "local-dev", "knowledge.v1", first)
     )
 
     snapshot = registry.snapshot({"knowledge.search"})
@@ -30,7 +30,7 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register(
-            CapabilityBinding("knowledge.search", "remote_knowledge", "knowledge.v1", FakeKnowledge("remote_knowledge"))
+            CapabilityBinding("knowledge.search", "remote_knowledge", "remote-prod", "knowledge.v1", FakeKnowledge("remote_knowledge"))
         )
 
     assert snapshot.require("knowledge.search").provider is first
@@ -39,14 +39,25 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
 
 def test_snapshot_only_contains_requested_capabilities() -> None:
     registry = CapabilityRegistry()
-    registry.register(CapabilityBinding("knowledge.search", "local", "knowledge.v1", object()))
-    registry.register(CapabilityBinding("scene_skill.catalog", "local", "scene.v1", object()))
+    registry.register(CapabilityBinding("knowledge.search", "local", "local-dev", "knowledge.v1", object()))
+    registry.register(CapabilityBinding("scene_skill.catalog", "local", "local-dev", "scene.v1", object()))
 
     snapshot = registry.snapshot({"knowledge.search"})
     assert snapshot.get("knowledge.search") is not None
     assert snapshot.get("scene_skill.catalog") is None
     with pytest.raises(LookupError, match="scene_skill.catalog"):
         snapshot.require("scene_skill.catalog")
+
+
+def test_snapshot_rejects_contracts_outside_consumer_matrix() -> None:
+    registry = CapabilityRegistry()
+    registry.register(CapabilityBinding("knowledge.search", "local", "local-dev", "knowledge.v2", object()))
+
+    with pytest.raises(ValueError, match="unsupported capability contract"):
+        registry.snapshot(
+            {"knowledge.search"},
+            supported_contracts={"knowledge.search": {"knowledge.v1"}},
+        )
 
 
 def test_knowledge_result_has_service_owned_shape_and_extensions() -> None:

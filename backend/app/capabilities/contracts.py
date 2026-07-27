@@ -143,10 +143,41 @@ class SkillExecutionRef:
 
 
 @dataclass(frozen=True)
+class SkillArtifact:
+    artifact_id: str
+    execution_id: str
+    kind: str
+    content_type: str
+    size: int
+    digest: str
+    expires_at: datetime | None = None
+    state: Literal["available", "expired", "revoked"] = "available"
+
+
+@dataclass(frozen=True)
+class SkillExecutionEvent:
+    event_id: str
+    execution_id: str
+    sequence: int
+    kind: str
+    occurred_at: datetime
+    payload: Mapping[str, JsonValue] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SkillExecutionEventPage:
+    execution_id: str
+    events: tuple[SkillExecutionEvent, ...] = ()
+    next_cursor: str | None = None
+    cursor_expires_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class SkillExecutionResult:
     execution_id: str
     state: Literal["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]
     summary: str | None = None
+    artifacts: tuple[SkillArtifact, ...] = ()
     error_code: str | None = None
     last_event_cursor: str | None = None
     extensions: Mapping[str, JsonValue] = field(default_factory=dict)
@@ -182,5 +213,12 @@ class GeneralSkillExecutor(Protocol):
     def start_execution(self, context: CapabilityContext, request: GeneralSkillExecutionRequest) -> SkillExecutionRef: ...
 
     def get_execution(self, context: CapabilityContext, execution_ref: SkillExecutionRef) -> SkillExecutionResult: ...
+
+    def list_events(
+        self,
+        context: CapabilityContext,
+        execution_ref: SkillExecutionRef,
+        after_cursor: str | None = None,
+    ) -> SkillExecutionEventPage: ...
 
     def cancel_execution(self, context: CapabilityContext, execution_ref: SkillExecutionRef, command_id: str) -> SkillExecutionResult: ...

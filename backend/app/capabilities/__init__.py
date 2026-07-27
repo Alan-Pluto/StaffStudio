@@ -18,6 +18,9 @@ from app.capabilities.contracts import (
     KnowledgeSearchResult,
     SceneSkillCatalog,
     SceneSkillDefinition,
+    SkillArtifact,
+    SkillExecutionEvent,
+    SkillExecutionEventPage,
 )
 from app.capabilities.registry import (
     CapabilityBinding,
@@ -41,4 +44,7 @@ __all__ = [
     "KnowledgeSearchResult",
     "SceneSkillCatalog",
     "SceneSkillDefinition",
+    "SkillArtifact",
+    "SkillExecutionEvent",
+    "SkillExecutionEventPage",
 ]
