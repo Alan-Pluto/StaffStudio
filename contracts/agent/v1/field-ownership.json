@@ -43,7 +43,8 @@
         {"claim": "messages", "payload_paths": ["/messages"]},
         {"claim": "session", "payload_paths": ["/session"]},
         {"claim": "interaction_checks", "payload_paths": ["/interaction_checks"]},
-        {"claim": "sync_response", "payload_paths": ["/sync_response"]}
+        {"claim": "sync_response", "payload_paths": ["/sync_response"]},
+        {"claim": "persisted_session_evidence", "payload_paths": ["/persisted_pre_state", "/persisted_session"]}
       ],
       "forbidden": ["provider_credentials", "provider_internal_ref"]
     }
@@ -90,6 +91,26 @@
       "allowed_references": [
         {"plane": "conversation", "pointer_prefix": "/messages"},
         {"plane": "conversation", "pointer_prefix": "/interaction_checks"}
+      ]
+    },
+    {
+      "id": "legacy.graph_step_identity",
+      "fixture_sets": ["legacy_characterization"],
+      "operator": "equal",
+      "minimum_references": 2,
+      "allowed_references": [
+        {"plane": "domain", "pointer_prefix": "/facts"},
+        {"plane": "db_events", "pointer_prefix": "/events"}
+      ]
+    },
+    {
+      "id": "legacy.graph_pending_identity",
+      "fixture_sets": ["legacy_characterization"],
+      "operator": "equal",
+      "minimum_references": 2,
+      "allowed_references": [
+        {"plane": "domain", "pointer_prefix": "/facts"},
+        {"plane": "db_events", "pointer_prefix": "/events"}
       ]
     },
     {

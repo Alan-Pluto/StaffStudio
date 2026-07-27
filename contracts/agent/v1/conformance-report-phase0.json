@@ -3,11 +3,11 @@
   "contract_version": "agent/v1",
   "phase_scope": "0A",
   "source_revision": "6c6594d42c08ae3757a72aa0e654a3fe555e4077",
-  "generated_at": "2026-07-27T06:09:14Z",
-  "environment": {"status": "contract_and_legacy_characterization_in_progress", "database": "real_file_sqlite_seven_variants_plus_isolated_browser_sqlite", "frontend": "vitest_build_and_loopback_browser_characterization_partial"},
+  "generated_at": "2026-07-27T06:42:47Z",
+  "environment": {"status": "contract_and_legacy_characterization_in_progress", "database": "real_file_sqlite_ten_variants_plus_isolated_browser_sqlite", "frontend": "vitest_build_and_loopback_browser_characterization_partial"},
   "gate_decision": "no_go",
   "gate_reasons": [
-    "Required Legacy five-plane fixtures exist for 7 of 27 scenario variants; remaining variants are incomplete.",
+    "Required Legacy five-plane fixtures exist for 10 of 27 scenario variants; remaining variants are incomplete.",
     "Target-v1 runtime conformance is not implemented; the automated success-terminal probe is limited to GT01 plain chat.",
     "Browser characterization found a mobile layout failure; automated desktop replay, feedback rollback, Citation, Handoff, and Scheduled Draft confirmation remain uncovered."
   ],
@@ -15,13 +15,13 @@
   "legacy_characterization_status": "in_progress",
   "schema_validation_results": [{"id": "machine_contract_schemas", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "All 21 Draft 2020-12 schemas and 12 registered instances passed backend/tests/agent_golden; manifest orphan/duplicate checks, owned payload path resolution, recursive forbidden-key checks, and manifest-pinned Legacy field observations also passed."}],
   "scenario_plane_results": [
-    {"id": "captured_legacy_variants", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "GT01 sync/SSE/feedback-refresh-toggle, GT02 ask-refresh-continue, GT13 LLM error, GT15 full, and GT16 History have 35 checked-in five-plane envelopes and independent runtime recapture."},
-    {"id": "remaining_GT01-GT17_variants", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Five-plane fixture envelopes remain missing for 20 of 27 catalog variants."}
+    {"id": "captured_legacy_variants", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "GT01 sync/SSE/feedback-refresh-toggle, GT02 ask-refresh-continue, GT03 true/false branches, GT04 parallel merge, GT13 LLM error, GT15 full, and GT16 History have 50 checked-in five-plane envelopes and independent runtime recapture."},
+    {"id": "remaining_GT01-GT17_variants", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Five-plane fixture envelopes remain missing for 17 of 27 catalog variants."}
   ],
   "requirement_coverage": {"status": "incomplete", "covered": 0, "required": 29, "missing": ["runtime_assertions"]},
   "vocabulary_coverage": {"status": "complete", "covered": 1, "required": 1, "missing": []},
   "join_invariant_results": [
-    {"id": "captured_legacy_cross_plane_joins", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Required per-variant relationships, profile-pinned endpoint roles/path patterns/semantic qualifiers, unique non-self references, durable SSE-to-DB event_id joins, feedback target-to-History/API-response joins, and attachment request-to-History joins pass for all seven captured variants."},
+    {"id": "captured_legacy_cross_plane_joins", "status": "pass", "evidence_mode": "automated", "gate_required": true, "detail": "Required per-variant relationships, profile-pinned endpoint roles/path patterns/semantic qualifiers, unique non-self references, durable SSE-to-DB event_id joins, feedback target-to-History/API-response joins, attachment request-to-History joins, and public Event API graph transition/pending snapshots-to-SQLite joins pass for all ten captured variants. GT03/GT04 also retain explicit persisted pre/post Session evidence."},
     {"id": "remaining_legacy_cross_plane_joins", "status": "not_run", "evidence_mode": "not_available", "gate_required": true, "detail": "Join evidence remains absent for uncaptured variants."}
   ],
   "happens_before_results": [
@@ -44,6 +44,15 @@
     {"scenario": "GT02-ask-refresh-continue", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
     {"scenario": "GT02-ask-refresh-continue", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
     {"scenario": "GT02-ask-refresh-continue", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
+    {"scenario": "GT03-true", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
+    {"scenario": "GT03-true", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
+    {"scenario": "GT03-true", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
+    {"scenario": "GT03-false", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
+    {"scenario": "GT03-false", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
+    {"scenario": "GT03-false", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
+    {"scenario": "GT04-merge", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
+    {"scenario": "GT04-merge", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
+    {"scenario": "GT04-merge", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
     {"scenario": "GT13-llm-error", "run": 1, "execution": "in_process", "hash_seed": null, "timezone": "controlled_utc_clock", "canonical_match": true},
     {"scenario": "GT13-llm-error", "run": 2, "execution": "fresh_process", "hash_seed": "1", "timezone": "UTC", "canonical_match": true},
     {"scenario": "GT13-llm-error", "run": 3, "execution": "fresh_process", "hash_seed": "777", "timezone": "America/New_York", "canonical_match": true},
@@ -82,14 +91,14 @@
     "scenario-catalog.json": "sha256:9725d8e215fd2b528f0c8bc71a0ca007fa2c60b159856241f9f4ce2dd5fd3daa",
     "requirement-registry.json": "sha256:896babc35e20a5cef4884eae26b19853eccbfd7a71dcbee781db790c4b6d435e",
     "scenario-vocabulary.json": "sha256:52e35c9fc1bcc0f30d0a7dac8aef1fd446e397f512de3d943b3e82b3e4c99c94",
-    "field-ownership.json": "sha256:9c78b530ef3599285fa9561d1562bfa2361c9a60de7131e39542e79f02ddd59c",
+    "field-ownership.json": "sha256:3cb081a1c0de85dc69ccd69685847d027bcf0a233a084eefe2f31247536dfd98",
     "compatibility-matrix.json": "sha256:a0a658df111b3bfb2f705b2b810a3b02715671414ee64844506058df087bd734",
     "legacy-seams.json": "sha256:44729fa8a5fd24ebfebb3a52dfffc67a8f8264c5920977fb67540b49e79d069c",
     "pairwise-manifest.json": "sha256:7aadea29485087e60d0faa0f3c974b30d5e52e3e4ecdb68e15af1ba22ae5223b",
     "legacy-skill-corpus.json": "sha256:2c499cfca742779cfce6407fe0ac2bbddbbfa478bf47e09e5a3ac173ecd568e6",
-    "normalization-profiles.json": "sha256:12190f7fbc7cef27f8ad4341952cfb46f5a775e28da16529045a2d7dc7ac3bcd",
-    "relationship-requirements.json": "sha256:844e2fbeec78502e645b6e9a7fe5bd772011d0d13c8a5e1976a51c1331c11332",
-    "manifest_closure": "sha256:fd8b7cd2fac7437f4483461202555260cfa44609a49c2369ce0c7bb10d3b44cc"
+    "normalization-profiles.json": "sha256:2be3a2ad27f6ff312b7ca4b90917eb5cb6c38fd3b401ab7e9a61fea5d0628955",
+    "relationship-requirements.json": "sha256:b3a46634a7fe472cf99462af4bd6dee53be71cb092abee11ed67ff6b57b5fc38",
+    "manifest_closure": "sha256:1b294b5b5a3345ca7b9157c39139b06111597e3e163db562068663467cbd12d0"
   },
   "reviews": [
     {"role": "architecture", "status": "revision_required", "runtime_gate": "no_go"},

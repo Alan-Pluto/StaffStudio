@@ -207,6 +207,28 @@ class GoldenHarness:
             )
             db.commit()
 
+    def create_persisted_session(
+        self,
+        session_id: str,
+        *,
+        active_skill_id: str,
+        active_step_id: str,
+        slots: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with Session(self.engine) as db:
+            row = ChatSession(
+                id=session_id,
+                tenant_id=TENANT_ID,
+                user_id=USER_ID,
+                agent_id=AGENT_ID,
+                active_skill_id=active_skill_id,
+                active_step_id=active_step_id,
+                slots_json=slots or {},
+            )
+            db.add(row)
+            db.commit()
+        return self.database_rows(session_id)["session"]
+
     def create_scheduled_task(self, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         response = self.client.post(
             "/api/chat/scheduled-tasks",

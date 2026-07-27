@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_golden.harness import GoldenHarness, HttpCapture
-from agent_golden.scripted_dependencies import ScriptedLLMPlan
+from agent_golden.scripted_dependencies import ScriptedLLMClient, ScriptedLLMPlan
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,7 @@ class LegacyScenarioCapture:
     message: str
     client_turn_id: str
     request_extra: dict[str, Any] = field(default_factory=dict)
+    persisted_pre_state: dict[str, Any] | None = None
     interaction_checks: list[dict[str, Any]] = field(default_factory=list)
     facts: list[dict[str, Any]] = field(default_factory=list)
 
@@ -65,6 +66,79 @@ def plan_for_variant(variant_id: str) -> ScriptedLLMPlan:
                 },
             }
         )
+    if variant_id in {"GT03-true", "GT03-false"}:
+        selected_step = "approve" if variant_id == "GT03-true" else "reject"
+        return ScriptedLLMPlan(
+            json_by_phase={
+                "Router": {
+                    "decision": "continue_active",
+                    "target_skill_id": "skill_conditional_audit",
+                    "target_step_id": "start",
+                    "confidence": 1.0,
+                    "user_intent": "审核报文",
+                    "reason": "Exercise the selected exclusive branch.",
+                    "slot_hints": {"message_content": "Golden 审核报文"},
+                }
+            },
+            json_sequence_by_phase={
+                "Step Agent": (
+                    {
+                        "action": "advance",
+                        "reply": "审核分支已选择。",
+                        "slot_updates": {"message_content": "Golden 审核报文"},
+                        "next_step_id": selected_step,
+                        "is_step_completed": True,
+                    },
+                    {
+                        "action": "reply",
+                        "reply": "审核结果已确认。",
+                        "is_step_completed": True,
+                    },
+                )
+            },
+        )
+    if variant_id == "GT04-merge":
+        return ScriptedLLMPlan(
+            json_by_phase={
+                "Router": {
+                    "decision": "continue_active",
+                    "target_skill_id": "skill_parallel_audit",
+                    "target_step_id": "start",
+                    "confidence": 1.0,
+                    "user_intent": "并行审核报文",
+                    "reason": "Exercise sibling ordering and merge.",
+                    "slot_hints": {"message_content": "Golden 并行审核报文"},
+                }
+            },
+            json_sequence_by_phase={
+                "Step Agent": (
+                    {
+                        "action": "advance",
+                        "reply": "开始收款方检查。",
+                        "slot_updates": {"message_content": "Golden 并行审核报文"},
+                        "next_step_id": "check_payee",
+                        "is_step_completed": True,
+                    },
+                    {
+                        "action": "advance",
+                        "reply": "收款方检查完成。",
+                        "next_step_id": "report",
+                        "is_step_completed": True,
+                    },
+                    {
+                        "action": "advance",
+                        "reply": "敏感词检查完成。",
+                        "next_step_id": "report",
+                        "is_step_completed": True,
+                    },
+                    {
+                        "action": "reply",
+                        "reply": "并行审核报告已生成。",
+                        "is_step_completed": True,
+                    },
+                )
+            },
+        )
     return ScriptedLLMPlan()
 
 
@@ -92,6 +166,10 @@ def execute_legacy_variant(
         return _feedback_refresh_toggle(harness)
     if variant_id == "GT02-ask-refresh-continue":
         return _sop_refresh_continue(repo_root, harness)
+    if variant_id in {"GT03-true", "GT03-false"}:
+        return _conditional_branch(harness, variant_id)
+    if variant_id == "GT04-merge":
+        return _parallel_sibling_merge(harness)
     if variant_id == "GT13-llm-error":
         return _llm_error(repo_root, harness)
     if variant_id == "GT15-full":
@@ -238,6 +316,213 @@ def _sop_refresh_continue(repo_root: Path, harness: GoldenHarness) -> LegacyScen
             }
         ],
     )
+
+
+def _conditional_branch(
+    harness: GoldenHarness,
+    variant_id: str,
+) -> LegacyScenarioCapture:
+    harness.publish_scene_skill(_audit_graph_skill(parallel=False))
+    selected_step = "approve" if variant_id == "GT03-true" else "reject"
+    message = "审核通过。" if variant_id == "GT03-true" else "审核拒绝。"
+    client_turn_id = f"client-{variant_id.lower()}"
+    session_id = f"session-{variant_id.lower()}"
+    pre_state = harness.create_persisted_session(
+        session_id,
+        active_skill_id="skill_conditional_audit",
+        active_step_id="start",
+    )
+    http = harness.post_sync(
+        harness.turn_payload(
+            message,
+            client_turn_id=client_turn_id,
+            session_id=session_id,
+        )
+    )
+    events = harness.session_events(http.session_id)
+    return LegacyScenarioCapture(
+        http=http,
+        message=message,
+        client_turn_id=client_turn_id,
+        request_extra={"session_id": session_id},
+        persisted_pre_state=pre_state,
+        interaction_checks=[_none_interaction()],
+        facts=[
+            {
+                "kind": "exclusive_graph_branch",
+                "observation_source": "session_events_api",
+                "selected_step_id": selected_step,
+                "step_transitions": _event_payloads(events, "skill_step_changed"),
+                "pending_step_updates": _event_payloads(
+                    events, "graph_pending_steps_updated"
+                ),
+                "llm_phase_order": _llm_phase_order(),
+            }
+        ],
+    )
+
+
+def _parallel_sibling_merge(harness: GoldenHarness) -> LegacyScenarioCapture:
+    harness.publish_scene_skill(_audit_graph_skill(parallel=True))
+    message = "并行检查这条报文。"
+    client_turn_id = "client-gt04-merge"
+    session_id = "session-gt04-merge"
+    pre_state = harness.create_persisted_session(
+        session_id,
+        active_skill_id="skill_parallel_audit",
+        active_step_id="start",
+    )
+    http = harness.post_sync(
+        harness.turn_payload(
+            message,
+            client_turn_id=client_turn_id,
+            session_id=session_id,
+        )
+    )
+    events = harness.session_events(http.session_id)
+    return LegacyScenarioCapture(
+        http=http,
+        message=message,
+        client_turn_id=client_turn_id,
+        request_extra={"session_id": session_id},
+        persisted_pre_state=pre_state,
+        interaction_checks=[_none_interaction()],
+        facts=[
+            {
+                "kind": "parallel_graph_merge",
+                "observation_source": "session_events_api",
+                "step_transitions": _event_payloads(events, "skill_step_changed"),
+                "pending_step_updates": _event_payloads(
+                    events, "graph_pending_steps_updated"
+                ),
+                "auto_progress_count": len(
+                    _event_payloads(events, "graph_auto_progress_started")
+                ),
+                "llm_phase_order": _llm_phase_order(),
+            }
+        ],
+    )
+
+
+def _audit_graph_skill(*, parallel: bool) -> dict[str, Any]:
+    skill_id = "skill_parallel_audit" if parallel else "skill_conditional_audit"
+    nodes = [
+        {
+            "node_id": "start",
+            "type": "condition",
+            "name": "审核入口",
+            "instruction": "根据审核结果选择后续节点。",
+            "expected_user_info": ["message_content"],
+            "allowed_actions": ["continue_flow"],
+        },
+        {
+            "node_id": "approve",
+            "type": "response",
+            "name": "审核通过",
+            "instruction": "反馈审核通过。",
+            "expected_user_info": [],
+            "allowed_actions": ["answer_user"],
+        },
+        {
+            "node_id": "reject",
+            "type": "response",
+            "name": "审核拒绝",
+            "instruction": "反馈审核拒绝。",
+            "expected_user_info": [],
+            "allowed_actions": ["answer_user"],
+        },
+    ]
+    if parallel:
+        nodes[1:1] = [
+            {
+                "node_id": "check_payee",
+                "type": "condition",
+                "name": "收款方一致性检查",
+                "instruction": "检查收款方是否一致。",
+                "expected_user_info": [],
+                "allowed_actions": ["continue_flow"],
+            },
+            {
+                "node_id": "check_sensitive",
+                "type": "condition",
+                "name": "敏感词检查",
+                "instruction": "检查敏感词。",
+                "expected_user_info": [],
+                "allowed_actions": ["continue_flow"],
+            },
+            {
+                "node_id": "report",
+                "type": "response",
+                "name": "生成报告",
+                "instruction": "汇总检查结果。",
+                "expected_user_info": [],
+                "allowed_actions": ["answer_user"],
+            },
+        ]
+        edges = [
+            {
+                "source_node_id": "start",
+                "next_node_id": "check_payee",
+                "condition": "报文已获取",
+                "priority": 0,
+            },
+            {
+                "source_node_id": "start",
+                "next_node_id": "check_sensitive",
+                "condition": "报文已获取",
+                "priority": 1,
+            },
+            {
+                "source_node_id": "check_payee",
+                "next_node_id": "report",
+                "condition": "一致性检查完成",
+                "priority": 2,
+            },
+            {
+                "source_node_id": "check_sensitive",
+                "next_node_id": "report",
+                "condition": "敏感词检查完成",
+                "priority": 3,
+            },
+        ]
+        terminal_node_ids = ["report"]
+    else:
+        edges = [
+            {
+                "source_node_id": "start",
+                "next_node_id": "approve",
+                "condition": "审核通过",
+                "priority": 0,
+            },
+            {
+                "source_node_id": "start",
+                "next_node_id": "reject",
+                "condition": "审核拒绝",
+                "priority": 1,
+            },
+        ]
+        terminal_node_ids = ["approve", "reject"]
+    return {
+        "skill_id": skill_id,
+        "version": "1.0.0",
+        "name": "并行审核" if parallel else "条件审核",
+        "required_info": ["message_content"],
+        "nodes": nodes,
+        "edges": edges,
+        "start_node_id": "start",
+        "terminal_node_ids": terminal_node_ids,
+    }
+
+
+def _event_payloads(events: list[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    return [item["data"] for item in events if item["event_type"] == event_type]
+
+
+def _llm_phase_order() -> list[str]:
+    return [
+        f"{item['method']}:{item['phase']}"
+        for item in ScriptedLLMClient.calls()
+    ]
 
 
 def _scheduled_draft(

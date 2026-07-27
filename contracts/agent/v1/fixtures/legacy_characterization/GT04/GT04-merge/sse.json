@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
-  "scenario_id": "GT01",
-  "variant_id": "GT01-feedback-refresh-toggle",
+  "scenario_id": "GT04",
+  "variant_id": "GT04-merge",
   "plane": "sse",
   "applicability": "not_applicable",
   "payload_schema": null,
@@ -26,6 +26,6 @@
   "joins": [],
   "happens_before": [],
   "omission": {
-    "reason": "sse is not_applicable for GT01-feedback-refresh-toggle."
+    "reason": "sse is not_applicable for GT04-merge."
   }
 }

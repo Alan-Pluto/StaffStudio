@@ -4,11 +4,13 @@
   "title": "Conversation and History Golden Payload v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["sync_response", "messages", "session", "interaction_checks"],
+  "required": ["sync_response", "messages", "session", "persisted_pre_state", "persisted_session", "interaction_checks"],
   "properties": {
     "sync_response": {"type": ["object", "null"]},
     "messages": {"type": "array", "minItems": 1, "items": {"type": "object"}},
     "session": {"type": ["object", "null"]},
+    "persisted_pre_state": {"type": ["object", "null"]},
+    "persisted_session": {"type": "object"},
     "interaction_checks": {
       "type": "array",
       "minItems": 1,

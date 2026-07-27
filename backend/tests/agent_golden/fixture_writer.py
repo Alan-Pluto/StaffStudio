@@ -151,6 +151,8 @@ def _raw_planes(
             "sync_response": capture.response,
             "messages": history,
             "session": public_session,
+            "persisted_pre_state": scenario.persisted_pre_state,
+            "persisted_session": rows["session"],
             "interaction_checks": scenario.interaction_checks,
         },
     }
@@ -310,6 +312,79 @@ def _add_relationships(
                     ],
                 }
             )
+        if variant_id in {"GT03-true", "GT03-false"}:
+            envelope["joins"].append(
+                {
+                    "name": "selected-graph-step-identity",
+                    "rule_id": "legacy.graph_step_identity",
+                    "references": [
+                        {
+                            "role": "domain_selected_step_id",
+                            "plane": "domain",
+                            "pointer": "/facts/0/selected_step_id",
+                        },
+                        {
+                            "role": "db_transition_step_id",
+                            "plane": "db_events",
+                            "pointer": (
+                                f"/events/{indices['db_skill_step_changed'][0]}"
+                                "/payload/to_step_id"
+                            ),
+                        },
+                    ],
+                }
+            )
+        if variant_id == "GT04-merge":
+            for transition_index, db_index in enumerate(
+                indices["db_skill_step_changed"]
+            ):
+                envelope["joins"].append(
+                    {
+                        "name": f"graph-transition-step-{transition_index + 1}-identity",
+                        "rule_id": "legacy.graph_step_identity",
+                        "references": [
+                            {
+                                "role": "domain_transition_step_id",
+                                "plane": "domain",
+                                "pointer": (
+                                    f"/facts/0/step_transitions/{transition_index}/"
+                                    "to_step_id"
+                                ),
+                            },
+                            {
+                                "role": "db_transition_step_id",
+                                "plane": "db_events",
+                                "pointer": f"/events/{db_index}/payload/to_step_id",
+                            },
+                        ],
+                    }
+                )
+            for pending_index, db_index in enumerate(
+                indices["db_graph_pending_steps_updated"]
+            ):
+                envelope["joins"].append(
+                    {
+                        "name": f"graph-pending-snapshot-{pending_index + 1}-identity",
+                        "rule_id": "legacy.graph_pending_identity",
+                        "references": [
+                            {
+                                "role": "domain_pending_step_ids",
+                                "plane": "domain",
+                                "pointer": (
+                                    f"/facts/0/pending_step_updates/{pending_index}/"
+                                    "pending_step_ids"
+                                ),
+                            },
+                            {
+                                "role": "db_pending_step_ids",
+                                "plane": "db_events",
+                                "pointer": (
+                                    f"/events/{db_index}/payload/pending_step_ids"
+                                ),
+                            },
+                        ],
+                    }
+                )
     if plane == "db_events":
         envelope["happens_before"] = [
             {
@@ -470,6 +545,16 @@ def _relationship_indices(planes: dict[str, Any], client_turn_id: str) -> dict[s
             lambda message: message.get("id") == assistant_id,
             "conversation assistant message",
         ),
+        "db_skill_step_changed": [
+            index
+            for index, event in enumerate(db_events)
+            if event.get("event_type") == "skill_step_changed"
+        ],
+        "db_graph_pending_steps_updated": [
+            index
+            for index, event in enumerate(db_events)
+            if event.get("event_type") == "graph_pending_steps_updated"
+        ],
     }
     sse_events = planes["sse"]["events"]
     if sse_events:

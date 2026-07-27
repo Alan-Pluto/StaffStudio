@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
-  "scenario_id": "GT02",
-  "variant_id": "GT02-ask-refresh-continue",
+  "scenario_id": "GT03",
+  "variant_id": "GT03-false",
   "plane": "conversation",
   "applicability": "required",
   "payload_schema": "planes/conversation.schema.json",
@@ -46,50 +46,72 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:cb8c2d922e856c00e06928950a93509e4a8a1b6ef78e6760d74d1c41b21628e3",
+  "content_hash": "sha256:7f35172ddea72b7e3ff22206114a551f901d8cdf9118b2657f1e0b7a95cc66d9",
   "joins": [],
   "happens_before": [],
   "payload": {
-    "sync_response": null,
+    "sync_response": {
+      "reply": "这是 Golden 测试的稳定回复。",
+      "session_id": "<id:0002>",
+      "router_decision": {
+        "decision": "continue_active",
+        "selected_task_id": null,
+        "target_skill_id": "skill_conditional_audit",
+        "target_step_id": "reject",
+        "confidence": 1.0,
+        "user_intent": "审核报文",
+        "general_intent": null,
+        "reason": "SOP 图还有可自动执行的后续节点。",
+        "source_message": "审核拒绝。",
+        "clarification_question": null,
+        "slot_hints": {},
+        "task_frames": [],
+        "pending_tasks": [],
+        "task_updates": [],
+        "created_tasks": [],
+        "awaiting_input": null
+      },
+      "step_result": {
+        "action": "reply",
+        "reply": "审核结果已确认。",
+        "slot_updates": {},
+        "tool_call": null,
+        "knowledge_query": null,
+        "knowledge_results": [],
+        "next_step_id": null,
+        "is_step_completed": true,
+        "handoff": false
+      },
+      "tool_result": null,
+      "session_state": {
+        "session_id": "<id:0002>",
+        "tenant_id": "tenant_golden",
+        "user_id": "user_golden",
+        "agent_id": "agent_golden",
+        "title": "审核拒绝",
+        "active_skill_id": null,
+        "active_step_id": null,
+        "slots": {},
+        "pending_tasks": [],
+        "awaiting_input": null,
+        "knowledge_context": [],
+        "summary": "最近回复：这是 Golden 测试的稳定回复。",
+        "last_agent_question": null,
+        "status": "active"
+      }
+    },
     "messages": [
-      {
-        "id": "<id:0027>",
-        "tenant_id": "tenant_golden",
-        "session_id": "<id:0002>",
-        "role": "user",
-        "content": "我要购买 A1。",
-        "metadata": {
-          "client_turn_id": "client-gt02-ask"
-        },
-        "turn_id": "<id:0027>",
-        "created_at": "2000-01-01T00:00:00.004Z",
-        "feedback_rating": null
-      },
-      {
-        "id": "<id:0044>",
-        "tenant_id": "tenant_golden",
-        "session_id": "<id:0002>",
-        "role": "assistant",
-        "content": "请告诉我您的姓名和购买数量。",
-        "metadata": {
-          "user_message_id": "<id:0027>",
-          "turn_id": "<id:0027>"
-        },
-        "turn_id": "<id:0027>",
-        "created_at": "2000-01-01T00:00:00.021Z",
-        "feedback_rating": null
-      },
       {
         "id": "<id:0001>",
         "tenant_id": "tenant_golden",
         "session_id": "<id:0002>",
         "role": "user",
-        "content": "我是小明，要买两件。",
+        "content": "审核拒绝。",
         "metadata": {
-          "client_turn_id": "client-gt02-continue"
+          "client_turn_id": "client-gt03-false"
         },
         "turn_id": "<id:0001>",
-        "created_at": "2000-01-01T00:00:00.028Z",
+        "created_at": "2000-01-01T00:00:00.003Z",
         "feedback_rating": null
       },
       {
@@ -97,13 +119,13 @@
         "tenant_id": "tenant_golden",
         "session_id": "<id:0002>",
         "role": "assistant",
-        "content": "请确认：小明购买 A1 两件，是否下单？",
+        "content": "这是 Golden 测试的稳定回复。",
         "metadata": {
           "user_message_id": "<id:0001>",
           "turn_id": "<id:0001>"
         },
         "turn_id": "<id:0001>",
-        "created_at": "2000-01-01T00:00:00.047Z",
+        "created_at": "2000-01-01T00:00:00.015Z",
         "feedback_rating": null
       }
     ],
@@ -112,41 +134,43 @@
       "tenant_id": "tenant_golden",
       "user_id": "user_golden",
       "agent_id": "agent_golden",
-      "title": "我要购买 A1",
-      "active_skill_id": "skill_purchase_001",
-      "active_step_id": "confirm_purchase",
+      "title": "审核拒绝",
+      "active_skill_id": null,
+      "active_step_id": null,
       "status": "active",
-      "summary": "最近回复：请确认：小明购买 A1 两件，是否下单？",
-      "last_agent_question": "请确认：小明购买 A1 两件，是否下单？",
+      "summary": "最近回复：这是 Golden 测试的稳定回复。",
+      "last_agent_question": null,
       "is_scheduled": false,
       "created_at": "2000-01-01T00:00:00.001Z",
-      "updated_at": "2000-01-01T00:00:00.046Z"
+      "updated_at": "2000-01-01T00:00:00.014Z"
     },
-    "persisted_pre_state": null,
+    "persisted_pre_state": {
+      "id": "<id:0002>",
+      "tenant_id": "tenant_golden",
+      "user_id": "user_golden",
+      "agent_id": "agent_golden",
+      "status": "active",
+      "active_skill_id": "skill_conditional_audit",
+      "active_step_id": "start",
+      "slots": {},
+      "awaiting_input": null,
+      "pending_tasks": [],
+      "created_at": "2000-01-01T00:00:00.001Z",
+      "updated_at": "2000-01-01T00:00:00.002Z"
+    },
     "persisted_session": {
       "id": "<id:0002>",
       "tenant_id": "tenant_golden",
       "user_id": "user_golden",
       "agent_id": "agent_golden",
       "status": "active",
-      "active_skill_id": "skill_purchase_001",
-      "active_step_id": "confirm_purchase",
-      "slots": {
-        "product_id": "A1",
-        "user_name": "小明",
-        "quantity": 2
-      },
-      "awaiting_input": {
-        "skill_id": "skill_purchase_001",
-        "step_id": "confirm_purchase",
-        "expected_fields": [
-          "purchase_confirmed"
-        ],
-        "question_summary": "请确认：小明购买 A1 两件，是否下单？"
-      },
+      "active_skill_id": null,
+      "active_step_id": null,
+      "slots": {},
+      "awaiting_input": null,
       "pending_tasks": [],
       "created_at": "2000-01-01T00:00:00.001Z",
-      "updated_at": "2000-01-01T00:00:00.046Z"
+      "updated_at": "2000-01-01T00:00:00.014Z"
     },
     "interaction_checks": [
       {

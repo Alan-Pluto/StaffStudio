@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
   "fixture_set": "legacy_characterization",
-  "scenario_id": "GT15",
-  "variant_id": "GT15-full",
+  "scenario_id": "GT03",
+  "variant_id": "GT03-true",
   "plane": "domain",
   "applicability": "required",
   "payload_schema": "planes/domain.schema.json",
@@ -46,7 +46,7 @@
     "interaction_id": "absent",
     "run_id": "absent"
   },
-  "content_hash": "sha256:d485ed2a67b6d6b533762935b9ad07162a8e9c9a28390d0972179dabe164ae08",
+  "content_hash": "sha256:37c83dd6910c4a07134f0033f2ba72bd6cc8af9191c41b0b5470d3994da404ae",
   "joins": [
     {
       "name": "user-turn-message-identity",
@@ -60,12 +60,12 @@
         {
           "role": "db_user_message_id",
           "plane": "db_events",
-          "pointer": "/events/5/payload/message_id"
+          "pointer": "/events/0/payload/message_id"
         },
         {
           "role": "conversation_user_message_id",
           "plane": "conversation",
-          "pointer": "/messages/2/id"
+          "pointer": "/messages/0/id"
         }
       ]
     },
@@ -86,7 +86,23 @@
         {
           "role": "conversation_assistant_message_id",
           "plane": "conversation",
-          "pointer": "/messages/3/id"
+          "pointer": "/messages/1/id"
+        }
+      ]
+    },
+    {
+      "name": "selected-graph-step-identity",
+      "rule_id": "legacy.graph_step_identity",
+      "references": [
+        {
+          "role": "domain_selected_step_id",
+          "plane": "domain",
+          "pointer": "/facts/0/selected_step_id"
+        },
+        {
+          "role": "db_transition_step_id",
+          "plane": "db_events",
+          "pointer": "/events/4/payload/to_step_id"
         }
       ]
     }
@@ -96,22 +112,79 @@
     "request": {
       "tenant_id": "tenant_golden",
       "agent_id": "agent_golden",
-      "message": "每天九点检查 A1 价格。",
-      "client_turn_id": "client-draft",
+      "message": "审核通过。",
+      "client_turn_id": "client-gt03-true",
       "turn_id": "<id:0001>",
-      "session_id": "<id:0002>",
-      "interaction_mode": "scheduled_task",
-      "client_timezone": "Asia/Shanghai"
+      "session_id": "<id:0002>"
     },
-    "router_decision": null,
-    "step_result": null,
+    "router_decision": {
+      "decision": "continue_active",
+      "selected_task_id": null,
+      "target_skill_id": "skill_conditional_audit",
+      "target_step_id": "approve",
+      "confidence": 1.0,
+      "user_intent": "审核报文",
+      "general_intent": null,
+      "reason": "SOP 图还有可自动执行的后续节点。",
+      "source_message": "审核通过。",
+      "clarification_question": null,
+      "slot_hints": {},
+      "task_frames": [],
+      "pending_tasks": [],
+      "task_updates": [],
+      "created_tasks": [],
+      "awaiting_input": null
+    },
+    "step_result": {
+      "action": "reply",
+      "reply": "审核结果已确认。",
+      "slot_updates": {},
+      "tool_call": null,
+      "knowledge_query": null,
+      "knowledge_results": [],
+      "next_step_id": null,
+      "is_step_completed": true,
+      "handoff": false
+    },
     "tool_result": null,
     "outcome": {
-      "reply": "我已按你选择的定时项目整理成自动任务草案。\n任务：每日检查价格\n计划：每天 09:00\n执行内容：检查 A1 价格并汇总\n确认下方卡片后才会启用；确认前不会创建自动任务。",
+      "reply": "这是 Golden 测试的稳定回复。",
       "session_id": "<id:0002>",
       "assistant_message_id": "<id:0003>"
     },
-    "facts": [],
-    "termination": "complete"
+    "facts": [
+      {
+        "kind": "exclusive_graph_branch",
+        "observation_source": "session_events_api",
+        "selected_step_id": "approve",
+        "step_transitions": [
+          {
+            "from_skill_id": "skill_conditional_audit",
+            "to_skill_id": "skill_conditional_audit",
+            "from_step_id": "start",
+            "to_step_id": "approve",
+            "turn_id": "<id:0001>",
+            "user_message_id": "<id:0001>",
+            "client_turn_id": "client-gt03-true"
+          }
+        ],
+        "pending_step_updates": [
+          {
+            "pending_step_ids": [],
+            "turn_id": "<id:0001>",
+            "user_message_id": "<id:0001>",
+            "client_turn_id": "client-gt03-true"
+          }
+        ],
+        "llm_phase_order": [
+          "json:Router",
+          "json:Step Agent",
+          "json:Step Agent",
+          "json:Reflection",
+          "text:Response Generator"
+        ]
+      }
+    ],
+    "termination": "sync_response"
   }
 }

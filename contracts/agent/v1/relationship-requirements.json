@@ -42,6 +42,33 @@
       ]
     },
     {
+      "id": "legacy.graph-selected-step-identity",
+      "kind": "join",
+      "rule_id": "legacy.graph_step_identity",
+      "references": [
+        {"role": "domain_selected_step_id", "plane": "domain", "pointer_pattern": "/facts/*/selected_step_id"},
+        {"role": "db_transition_step_id", "plane": "db_events", "pointer_pattern": "/events/*/payload/to_step_id", "qualifier": {"levels_up": 2, "relative_pointer": "/event_type", "equals": "skill_step_changed"}}
+      ]
+    },
+    {
+      "id": "legacy.graph-transition-step-identity",
+      "kind": "join",
+      "rule_id": "legacy.graph_step_identity",
+      "references": [
+        {"role": "domain_transition_step_id", "plane": "domain", "pointer_pattern": "/facts/*/step_transitions/*/to_step_id"},
+        {"role": "db_transition_step_id", "plane": "db_events", "pointer_pattern": "/events/*/payload/to_step_id", "qualifier": {"levels_up": 2, "relative_pointer": "/event_type", "equals": "skill_step_changed"}}
+      ]
+    },
+    {
+      "id": "legacy.graph-pending-snapshot-identity",
+      "kind": "join",
+      "rule_id": "legacy.graph_pending_identity",
+      "references": [
+        {"role": "domain_pending_step_ids", "plane": "domain", "pointer_pattern": "/facts/*/pending_step_updates/*/pending_step_ids"},
+        {"role": "db_pending_step_ids", "plane": "db_events", "pointer_pattern": "/events/*/payload/pending_step_ids", "qualifier": {"levels_up": 2, "relative_pointer": "/event_type", "equals": "graph_pending_steps_updated"}}
+      ]
+    },
+    {
       "id": "legacy.db-user-before-assistant",
       "kind": "happens_before",
       "rule_id": "legacy.observed_event_order",
@@ -112,6 +139,43 @@
         {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
         {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"},
         {"kind": "happens_before", "plane": "sse", "name": "user-event-before-complete", "profile_id": "legacy.sse-user-before-complete"}
+      ]
+    },
+    {
+      "fixture_set": "legacy_characterization",
+      "variant_id": "GT03-true",
+      "relations": [
+        {"kind": "join", "plane": "domain", "name": "user-turn-message-identity", "profile_id": "legacy.user-turn-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "selected-graph-step-identity", "profile_id": "legacy.graph-selected-step-identity"},
+        {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"}
+      ]
+    },
+    {
+      "fixture_set": "legacy_characterization",
+      "variant_id": "GT03-false",
+      "relations": [
+        {"kind": "join", "plane": "domain", "name": "user-turn-message-identity", "profile_id": "legacy.user-turn-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "selected-graph-step-identity", "profile_id": "legacy.graph-selected-step-identity"},
+        {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"}
+      ]
+    },
+    {
+      "fixture_set": "legacy_characterization",
+      "variant_id": "GT04-merge",
+      "relations": [
+        {"kind": "join", "plane": "domain", "name": "user-turn-message-identity", "profile_id": "legacy.user-turn-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "assistant-message-identity", "profile_id": "legacy.assistant-message-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-transition-step-1-identity", "profile_id": "legacy.graph-transition-step-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-transition-step-2-identity", "profile_id": "legacy.graph-transition-step-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-transition-step-3-identity", "profile_id": "legacy.graph-transition-step-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-pending-snapshot-1-identity", "profile_id": "legacy.graph-pending-snapshot-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-pending-snapshot-2-identity", "profile_id": "legacy.graph-pending-snapshot-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-pending-snapshot-3-identity", "profile_id": "legacy.graph-pending-snapshot-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-pending-snapshot-4-identity", "profile_id": "legacy.graph-pending-snapshot-identity"},
+        {"kind": "join", "plane": "domain", "name": "graph-pending-snapshot-5-identity", "profile_id": "legacy.graph-pending-snapshot-identity"},
+        {"kind": "happens_before", "plane": "db_events", "name": "user-event-before-assistant-event", "profile_id": "legacy.db-user-before-assistant"}
       ]
     },
     {
