@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://staffdeck.dev/contracts/provider/error/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error_code", "message", "retryable", "request_id"],
+  "properties": {
+    "error_code": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
+    "request_id": {"type": ["string", "null"]},
+    "provider_id": {"type": ["string", "null"]},
+    "extensions": {"type": "object", "additionalProperties": true}
+  }
+}

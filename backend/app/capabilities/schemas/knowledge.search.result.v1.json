@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://staffdeck.dev/contracts/knowledge/search/result/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query_id", "items", "outcome", "warnings", "extensions"],
+  "properties": {
+    "query_id": {"type": "string", "minLength": 1},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/hit"}},
+    "outcome": {"enum": ["complete", "partial"]},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "next_cursor": {"type": ["string", "null"]},
+    "service_version": {"type": ["string", "null"]},
+    "extensions": {"$ref": "#/$defs/extensions"}
+  },
+  "$defs": {
+    "hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hit_id", "content", "metadata"],
+      "properties": {
+        "hit_id": {"type": "string", "minLength": 1},
+        "content": {"type": "string", "minLength": 1},
+        "score": {"type": ["number", "null"]},
+        "source_ref": {"type": ["string", "null"]},
+        "metadata": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "patternProperties": {"^[a-z][a-z0-9_]*$": {"type": "object"}},
+      "additionalProperties": false
+    }
+  }
+}

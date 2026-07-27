@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://staffdeck.dev/contracts/knowledge/search/request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["context", "query"],
+  "properties": {
+    "context": {"$ref": "#/$defs/context"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 10000},
+    "query_type": {"enum": ["answer", "policy_check", "tool_discovery", "skill_discovery"], "default": "answer"},
+    "scope": {"type": "object", "additionalProperties": true},
+    "max_chunks": {"type": "integer", "minimum": 1, "maximum": 100},
+    "budget_tokens": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "cursor": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "tenant_id", "session_id", "turn_id", "channel"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_id": {"type": ["string", "null"]},
+        "user_id": {"type": ["string", "null"]},
+        "session_id": {"type": "string", "minLength": 1},
+        "turn_id": {"type": "string", "minLength": 1},
+        "channel": {"type": "string", "minLength": 1},
+        "trace_id": {"type": ["string", "null"]},
+        "deadline_at": {"type": ["string", "null"], "format": "date-time"},
+        "attempt": {"type": "integer", "minimum": 1},
+        "idempotency_key": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
