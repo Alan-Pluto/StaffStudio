@@ -14,3 +14,4 @@ def test_provider_error_is_classified_without_parsing_message() -> None:
     assert str(error) == "Knowledge service did not answer before the deadline"
     assert error.info.code == "KNOWLEDGE_UPSTREAM_TIMEOUT"
     assert error.info.retryable is True
+    assert error.info.to_payload()["error_code"] == "KNOWLEDGE_UPSTREAM_TIMEOUT"

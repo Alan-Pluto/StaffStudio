@@ -21,6 +21,8 @@ def assert_namespaced_extensions(extensions: Mapping[str, object]) -> None:
             raise ContractViolation(
                 f"extension namespace must be lowercase snake case: {namespace!r}"
             )
+        if not isinstance(extensions[namespace], Mapping):
+            raise ContractViolation("each extension namespace must contain an object")
     try:
         encoded = json.dumps(extensions, ensure_ascii=True, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -58,9 +60,15 @@ def assert_skill_execution_result(result: SkillExecutionResult) -> None:
         raise ContractViolation("failed Skill executions require error_code")
     if result.state in {"succeeded", "cancelled"} and result.error_code:
         raise ContractViolation("successful/cancelled Skill executions cannot carry error_code")
+    if result.state in {"queued", "running", "cancelling"} and result.error_code:
+        raise ContractViolation("non-terminal Skill executions cannot carry error_code")
     for artifact in result.artifacts:
         if artifact.execution_id != result.execution_id:
             raise ContractViolation("Skill artifact belongs to a different execution")
+        if not artifact.artifact_id or not artifact.kind or not artifact.content_type:
+            raise ContractViolation("Skill artifacts require id, kind and content_type")
+        if artifact.size < 0 or not artifact.digest:
+            raise ContractViolation("Skill artifacts require non-negative size and digest")
     assert_namespaced_extensions(result.extensions)
 
 

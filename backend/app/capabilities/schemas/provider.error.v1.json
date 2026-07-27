@@ -8,8 +8,12 @@
     "error_code": {"type": "string", "minLength": 1},
     "message": {"type": "string", "minLength": 1},
     "retryable": {"type": "boolean"},
-    "request_id": {"type": ["string", "null"]},
+    "request_id": {"type": "string", "minLength": 1},
     "provider_id": {"type": ["string", "null"]},
-    "extensions": {"type": "object", "additionalProperties": true}
+    "extensions": {
+      "type": "object",
+      "patternProperties": {"^[a-z][a-z0-9_]*$": {"type": "object"}},
+      "additionalProperties": false
+    }
   }
 }
