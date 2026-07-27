@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Mapping
 
-from app.capabilities.contracts import KnowledgeSearchResult, SkillExecutionResult
+from app.capabilities.contracts import GeneralSkillPackage, KnowledgeSearchResult
 from app.capabilities.errors import CapabilityErrorInfo
 
 _EXTENSION_NAMESPACE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -50,26 +50,35 @@ def assert_knowledge_search_result(result: KnowledgeSearchResult) -> None:
             raise ContractViolation("Knowledge hit source_ref must be a string")
 
 
-def assert_skill_execution_result(result: SkillExecutionResult) -> None:
-    states = {"queued", "running", "cancelling", "succeeded", "failed", "cancelled"}
-    if not result.execution_id:
-        raise ContractViolation("Skill execution_id is required")
-    if result.state not in states:
-        raise ContractViolation(f"unknown Skill execution state: {result.state!r}")
-    if result.state == "failed" and not result.error_code:
-        raise ContractViolation("failed Skill executions require error_code")
-    if result.state in {"succeeded", "cancelled"} and result.error_code:
-        raise ContractViolation("successful/cancelled Skill executions cannot carry error_code")
-    if result.state in {"queued", "running", "cancelling"} and result.error_code:
-        raise ContractViolation("non-terminal Skill executions cannot carry error_code")
-    for artifact in result.artifacts:
-        if artifact.execution_id != result.execution_id:
-            raise ContractViolation("Skill artifact belongs to a different execution")
-        if not artifact.artifact_id or not artifact.kind or not artifact.content_type:
-            raise ContractViolation("Skill artifacts require id, kind and content_type")
-        if artifact.size < 0 or not artifact.digest:
-            raise ContractViolation("Skill artifacts require non-negative size and digest")
-    assert_namespaced_extensions(result.extensions)
+def assert_general_skill_package(package: GeneralSkillPackage) -> None:
+    required = {
+        "package_id": package.package_id,
+        "slug": package.slug,
+        "version": package.version,
+        "digest": package.digest,
+        "package_contract_version": package.package_contract_version,
+        "skill_markdown": package.skill_markdown,
+        "entrypoint": package.entrypoint,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ContractViolation(
+            "General Skill package requires non-empty fields: " + ", ".join(missing)
+        )
+    if not package.files:
+        raise ContractViolation("General Skill package requires files")
+    paths: set[str] = set()
+    for item in package.files:
+        if not item.path or not isinstance(item.content, str):
+            raise ContractViolation("General Skill files require path and string content")
+        if item.path in paths:
+            raise ContractViolation(f"duplicate General Skill file path: {item.path}")
+        if item.size is not None and item.size < 0:
+            raise ContractViolation("General Skill file size cannot be negative")
+        paths.add(item.path)
+    if package.entrypoint not in paths:
+        raise ContractViolation("General Skill entrypoint must reference a package file")
+    assert_namespaced_extensions(package.extensions)
 
 
 def assert_provider_error(info: CapabilityErrorInfo) -> None:

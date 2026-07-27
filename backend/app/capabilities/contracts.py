@@ -61,14 +61,13 @@ class CapabilityContext:
 
 @dataclass(frozen=True)
 class GeneralSkillResourceRef:
-    """Pinned catalog resource passed to an executor; never resolve by slug at run time."""
+    """Pinned catalog resource; never resolve by slug while an Agent run is active."""
 
     catalog_binding_id: str
     package_id: str
     version: str
     digest: str
     package_contract_version: str
-    package_store_record_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,75 +151,27 @@ class GeneralSkillSummary:
 
 
 @dataclass(frozen=True)
+class GeneralSkillFile:
+    path: str
+    content: str
+    size: int | None = None
+    mime_type: str | None = None
+
+
+@dataclass(frozen=True)
 class GeneralSkillPackage:
+    """Immutable content snapshot loaded by StaffDeck and executed by its local Runner."""
+
     package_id: str
     slug: str
     version: str
     digest: str
     package_contract_version: str
+    skill_markdown: str
+    files: tuple[GeneralSkillFile, ...]
     entrypoint: str
     input_schema: Mapping[str, JsonValue] = field(default_factory=dict)
     output_schema: Mapping[str, JsonValue] = field(default_factory=dict)
-    extensions: ExtensionMap = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class GeneralSkillExecutionRequest:
-    resource_ref: GeneralSkillResourceRef
-    input: Mapping[str, JsonValue]
-    idempotency_key: str
-    execution_deadline_at: datetime | None = None
-    requested_artifacts: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SkillExecutionRef:
-    execution_id: str
-    package_id: str
-    version: str
-    digest: str
-    executor_binding_id: str
-    idempotency_key: str
-
-
-@dataclass(frozen=True)
-class SkillArtifact:
-    artifact_id: str
-    execution_id: str
-    kind: str
-    content_type: str
-    size: int
-    digest: str
-    expires_at: datetime | None = None
-    state: Literal["available", "expired", "revoked"] = "available"
-
-
-@dataclass(frozen=True)
-class SkillExecutionEvent:
-    event_id: str
-    execution_id: str
-    sequence: int
-    kind: str
-    occurred_at: datetime
-    payload: Mapping[str, JsonValue] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SkillExecutionEventPage:
-    execution_id: str
-    events: tuple[SkillExecutionEvent, ...] = ()
-    next_cursor: str | None = None
-    cursor_expires_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class SkillExecutionResult:
-    execution_id: str
-    state: Literal["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]
-    summary: str | None = None
-    artifacts: tuple[SkillArtifact, ...] = ()
-    error_code: str | None = None
-    last_event_cursor: str | None = None
     extensions: ExtensionMap = field(default_factory=dict)
 
 
@@ -243,25 +194,14 @@ class SceneSkillCatalog(Protocol):
 
 
 class GeneralSkillCatalog(Protocol):
+    """Loads Skill content; execution remains inside StaffDeck."""
+
     provider_id: str
 
     def list_published(self, context: CapabilityContext) -> Sequence[GeneralSkillSummary]: ...
 
-    def get_package(self, context: CapabilityContext, slug: str, version: str | None = None) -> GeneralSkillPackage | None: ...
-
-
-class GeneralSkillExecutor(Protocol):
-    provider_id: str
-
-    def start_execution(self, context: CapabilityContext, request: GeneralSkillExecutionRequest) -> SkillExecutionRef: ...
-
-    def get_execution(self, context: CapabilityContext, execution_ref: SkillExecutionRef) -> SkillExecutionResult: ...
-
-    def list_events(
+    def get_package(
         self,
         context: CapabilityContext,
-        execution_ref: SkillExecutionRef,
-        after_cursor: str | None = None,
-    ) -> SkillExecutionEventPage: ...
-
-    def cancel_execution(self, context: CapabilityContext, execution_ref: SkillExecutionRef, command_id: str) -> SkillExecutionResult: ...
+        resource_ref: GeneralSkillResourceRef,
+    ) -> GeneralSkillPackage | None: ...

@@ -9,8 +9,7 @@ from app.capabilities.contracts import (
     CapabilityContext,
     CitationDetail,
     GeneralSkillCatalog,
-    GeneralSkillExecutionRequest,
-    GeneralSkillExecutor,
+    GeneralSkillFile,
     GeneralSkillPackage,
     GeneralSkillResourceRef,
     KnowledgeRuntime,
@@ -19,9 +18,6 @@ from app.capabilities.contracts import (
     KnowledgeSearchResult,
     SceneSkillCatalog,
     SceneSkillDefinition,
-    SkillArtifact,
-    SkillExecutionEvent,
-    SkillExecutionEventPage,
 )
 from app.capabilities.errors import CapabilityErrorInfo, CapabilityProviderError
 from app.capabilities.local_knowledge import LocalKnowledgeRuntime
@@ -45,8 +41,7 @@ __all__ = [
     "ContractViolation",
     "DurableCapabilityBinding",
     "GeneralSkillCatalog",
-    "GeneralSkillExecutionRequest",
-    "GeneralSkillExecutor",
+    "GeneralSkillFile",
     "GeneralSkillPackage",
     "GeneralSkillResourceRef",
     "KnowledgeRuntime",
@@ -56,8 +51,5 @@ __all__ = [
     "LocalKnowledgeRuntime",
     "SceneSkillCatalog",
     "SceneSkillDefinition",
-    "SkillArtifact",
-    "SkillExecutionEvent",
-    "SkillExecutionEventPage",
     "build_local_capability_registry",
 ]
