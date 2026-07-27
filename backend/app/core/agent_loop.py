@@ -24,8 +24,11 @@ from app.agents.branching import (
     visible_tool_rows,
 )
 from app.channels.service_outbox import stage_channel_delivery
+from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
+from app.core.human_handoff_service import HumanHandoffService
+from app.core.legacy_conversation_projection import LegacyConversationProjection
 from app.core.legacy_graph_rules import LegacyGraphRules
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
@@ -36,7 +39,14 @@ from app.core.response_generator import (
 )
 from app.core.router import Router
 from app.core.skill_runtime import SkillRuntime
+from app.core.slot_hydration_policy import SlotHydrationPolicy
 from app.core.step_agent import StepAgent
+from app.core.task_frame_policy import QueuedTaskContinuation, TaskFramePolicy
+from app.core.tool_replay_policy import (
+    TOOL_CALL_HISTORY_SLOT,
+    TOOL_RESULTS_SLOT,
+    ToolReplayPolicy,
+)
 from app.db.models import (
     AgentEvent,
     AgentProfile,
@@ -50,7 +60,6 @@ from app.db.models import (
     Skill,
     Tool,
     UIConfig,
-    User,
     new_id,
     utc_now,
 )
@@ -72,10 +81,6 @@ from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
 from app.observability import EventLog
 from app.observability.spans import llm_operation
-from app.session.attachments import (
-    message_content_with_attachment_context,
-    message_images_from_metadata,
-)
 from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatTurnRequest,
@@ -93,12 +98,9 @@ STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 DEFAULT_REFLECTION_MAX_ROUNDS = 1
 REFLECTION_MAX_ROUNDS_LIMIT = 5
 MAX_TOOL_ACTIONS_PER_TURN = 6
-TOOL_CALL_HISTORY_SLOT = "_tool_call_history"
-TOOL_RESULTS_SLOT = "_tool_results"
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
-IDEMPOTENT_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 ERROR_TRACEBACK_CHAR_LIMIT = 6000
 _KNOWLEDGE_STEPS_SEEN: ContextVar[set[tuple[str, str]] | None] = ContextVar(
     "knowledge_steps_seen", default=None
@@ -106,19 +108,6 @@ _KNOWLEDGE_STEPS_SEEN: ContextVar[set[tuple[str, str]] | None] = ContextVar(
 _KNOWLEDGE_RESULTS_CACHE: ContextVar[
     dict[tuple[str, str], dict[str, Any]] | None
 ] = ContextVar("knowledge_results_cache", default=None)
-AGENT_PERSONA_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
-    ("role_name", "岗位"),
-    ("position", "岗位"),
-    ("job_title", "岗位"),
-    ("role", "角色"),
-    ("title", "职务"),
-    ("department", "部门"),
-    ("team", "团队"),
-    ("work_styles", "工作风格"),
-    ("expertise_tags", "擅长领域"),
-    ("work_modes", "工作方式"),
-)
-
 ExecutionFinalizeState = Literal["continued", "completed", "handoff"]
 
 
@@ -135,29 +124,11 @@ def _knowledge_scope_ids(
 
 
 def _agent_identity_prompt(agent: AgentProfile) -> str:
-    metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
-    lines = [
-        "你正在扮演一个企业数字员工。请始终以该员工的身份、岗位和职责口径回复用户，不要自称其他员工。",
-        f"员工名称：{_single_line_text(agent.name)}",
-    ]
-    description = _single_line_text(agent.description)
-    if description:
-        lines.append(f"员工描述：{description}")
-    seen_labels: set[str] = set()
-    for key, label in AGENT_PERSONA_METADATA_FIELDS:
-        value = _metadata_prompt_text(metadata.get(key))
-        if not value:
-            continue
-        if label in seen_labels and label in {"岗位"}:
-            continue
-        seen_labels.add(label)
-        lines.append(f"{label}：{value}")
-    persona = str(agent.persona_prompt or "").strip()
-    if persona:
-        lines.append("")
-        lines.append("员工角色补充要求：")
-        lines.append(persona)
-    return "\n".join(lines)
+    return AgentIdentityPrompt.render(
+        agent,
+        single_line=_single_line_text,
+        metadata_formatter=_metadata_prompt_text,
+    )
 
 
 def _metadata_prompt_text(value: object) -> str:
@@ -172,43 +143,7 @@ def _metadata_prompt_text(value: object) -> str:
 
 
 def _single_line_text(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def _slot_has_value(slots: dict[str, Any], field: str) -> bool:
-    value = slots.get(field)
-    return value is not None and value != "" and value != []
-
-
-def _skill_expected_fields(skill: Skill) -> set[str]:
-    content = skill.content_json or {}
-    fields: set[str] = set()
-    required_info = content.get("required_info")
-    if isinstance(required_info, list):
-        fields.update(str(item) for item in required_info if str(item).strip())
-    nodes = content.get("nodes")
-    if isinstance(nodes, list):
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            expected = node.get("expected_user_info")
-            if isinstance(expected, list):
-                fields.update(str(item) for item in expected if str(item).strip())
-    return fields
-
-
-def _profile_name_from_memory(memory_context: list[dict[str, object]]) -> str:
-    for memory in memory_context:
-        if memory.get("kind") != "profile":
-            continue
-        metadata = memory.get("metadata")
-        key = metadata.get("key") if isinstance(metadata, dict) else None
-        content = str(memory.get("content") or "").strip()
-        if key != "preferred_name":
-            continue
-        if content:
-            return content[:40]
-    return ""
+    return AgentIdentityPrompt.single_line(value)
 
 
 class AgentLoopPreconditionError(Exception):
@@ -231,16 +166,6 @@ class PreparedTurn:
     general_response: ChatTurnResponse | None = None
     reply_override: str | None = None
     user_message_id: str | None = None
-
-
-@dataclass
-class QueuedTaskContinuation:
-    reply: str
-    task_results: list[dict[str, object]]
-    active_skill: Skill | None
-    router_decision: RouterDecision
-    step_result: StepAgentResult
-    tool_result: ToolResult | None
 
 
 class AgentLoop:
@@ -272,45 +197,14 @@ class AgentLoop:
         skills: list[Skill],
         memory_context: list[dict[str, object]],
     ) -> dict[str, Any]:
-        skills_by_id = {skill.skill_id: skill for skill in skills}
-        hydrated: dict[str, Any] = {}
-
-        target_skill = skills_by_id.get(
-            router_decision.target_skill_id or chat_session.active_skill_id or ""
+        return SlotHydrationPolicy.hydrate(
+            chat_session,
+            router_decision,
+            skills,
+            memory_context,
+            patcher=self._slot_hydration_patch,
+            awaiting_trimmer=self._trim_satisfied_awaiting_fields,
         )
-        base_slots = dict(chat_session.slots_json or {})
-        base_slots.update(dict(router_decision.slot_hints or {}))
-        patch = self._slot_hydration_patch(target_skill, base_slots, memory_context)
-        if patch:
-            router_decision.slot_hints = {**dict(router_decision.slot_hints or {}), **patch}
-            hydrated["primary"] = patch
-        remaining_awaiting = self._trim_satisfied_awaiting_fields(
-            router_decision, {**base_slots, **patch}
-        )
-        if remaining_awaiting is not None:
-            hydrated["awaiting_input_expected_fields"] = remaining_awaiting
-
-        task_patches: list[dict[str, Any]] = []
-        for task in [
-            *router_decision.task_frames,
-            *router_decision.pending_tasks,
-            *router_decision.created_tasks,
-        ]:
-            task_skill = skills_by_id.get(task.target_skill_id or "")
-            task_slots = dict(task.slot_hints or {})
-            task_patch = self._slot_hydration_patch(task_skill, task_slots, memory_context)
-            if task_patch:
-                task.slot_hints = {**task_slots, **task_patch}
-                task_patches.append(
-                    {
-                        "task_id": task.task_id,
-                        "target_skill_id": task.target_skill_id,
-                        "slots": task_patch,
-                    }
-                )
-        if task_patches:
-            hydrated["tasks"] = task_patches
-        return hydrated
 
     def _slot_hydration_patch(
         self,
@@ -318,34 +212,12 @@ class AgentLoop:
         slots: dict[str, Any],
         memory_context: list[dict[str, object]],
     ) -> dict[str, Any]:
-        if not skill:
-            return {}
-        expected_fields = _skill_expected_fields(skill)
-        patch: dict[str, Any] = {}
-        if "user_name" in expected_fields and not _slot_has_value(slots, "user_name"):
-            profile_name = _profile_name_from_memory(memory_context)
-            if profile_name:
-                patch["user_name"] = profile_name
-        return patch
+        return SlotHydrationPolicy.patch(skill, slots, memory_context)
 
     def _trim_satisfied_awaiting_fields(
         self, router_decision: RouterDecision, slots: dict[str, Any]
     ) -> list[str] | None:
-        if not router_decision.awaiting_input:
-            return None
-        original = list(router_decision.awaiting_input.expected_fields)
-        remaining = [
-            field
-            for field in router_decision.awaiting_input.expected_fields
-            if not _slot_has_value(slots, field)
-        ]
-        if remaining == original:
-            return None
-        if remaining:
-            router_decision.awaiting_input.expected_fields = remaining
-        else:
-            router_decision.awaiting_input = None
-        return remaining
+        return SlotHydrationPolicy.trim_satisfied_awaiting_fields(router_decision, slots)
 
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
         _KNOWLEDGE_STEPS_SEEN.set(set())
@@ -2648,137 +2520,44 @@ class AgentLoop:
         active_skill: Skill | None,
         step_result: StepAgentResult,
     ) -> HumanHandoffRequest:
-        existing = self.db.exec(
-            select(HumanHandoffRequest)
-            .where(HumanHandoffRequest.tenant_id == tenant_id)
-            .where(HumanHandoffRequest.session_id == chat_session.id)
-            .where(HumanHandoffRequest.status == "pending")
-        ).first()
-        if existing:
-            chat_session.status = "handoff"
-            chat_session.awaiting_input_json = {
-                "type": "human_handoff",
-                "handoff_id": existing.id,
-                "pending_question": existing.pending_question,
-            }
-            chat_session.updated_at = utc_now()
-            return existing
-
-        current_step = (
-            self._current_skill_step(active_skill, chat_session.active_step_id)
-            if active_skill
-            else None
-        )
-        handoff = HumanHandoffRequest(
-            tenant_id=tenant_id,
-            session_id=chat_session.id,
-            agent_id=chat_session.agent_id,
-            requester_user_id=chat_session.user_id,
-            assignee_user_id=self._human_handoff_assignee_user_id(
-                tenant_id, chat_session.agent_id, chat_session.user_id
-            ),
-            trigger_skill_id=chat_session.active_skill_id,
-            trigger_step_id=chat_session.active_step_id,
-            context_summary=self._human_handoff_context_summary(chat_session),
-            pending_question=self._human_handoff_pending_question(current_step, step_result),
-            resume_payload_json={
-                "active_skill_id": chat_session.active_skill_id,
-                "active_step_id": chat_session.active_step_id,
-                "slots": chat_session.slots_json or {},
-                "pending_tasks": chat_session.pending_tasks_json or [],
-            },
-            metadata_json={
-                "step": current_step or {},
-                "step_reply": step_result.reply,
-                "step_handoff": step_result.handoff,
-            },
-        )
-        self.db.add(handoff)
-        chat_session.status = "handoff"
-        chat_session.awaiting_input_json = {
-            "type": "human_handoff",
-            "handoff_id": handoff.id,
-            "pending_question": handoff.pending_question,
-        }
-        chat_session.updated_at = utc_now()
-        self.events.record(
+        return HumanHandoffService(self.db, self.events).create(
             tenant_id,
-            chat_session.id,
-            "human_handoff_requested",
-            {
-                "handoff_id": handoff.id,
-                "agent_id": handoff.agent_id,
-                "assignee_user_id": handoff.assignee_user_id,
-                "trigger_skill_id": handoff.trigger_skill_id,
-                "trigger_step_id": handoff.trigger_step_id,
-                "pending_question": handoff.pending_question,
-            },
+            chat_session,
+            step_result,
+            current_step_resolver=lambda: (
+                self._current_skill_step(active_skill, chat_session.active_step_id)
+                if active_skill
+                else None
+            ),
+            assignee_resolver=self._human_handoff_assignee_user_id,
+            context_summary=self._human_handoff_context_summary,
+            pending_question=self._human_handoff_pending_question,
         )
-        return handoff
 
     def _human_handoff_assignee_user_id(
         self, tenant_id: str, agent_id: str | None, fallback_user_id: str | None
     ) -> str | None:
-        if agent_id:
-            agent = self.db.exec(
-                select(AgentProfile).where(
-                    AgentProfile.tenant_id == tenant_id, AgentProfile.id == agent_id
-                )
-            ).first()
-            metadata = agent.metadata_json if agent else {}
-            if isinstance(metadata, dict):
-                for key in (
-                    "owner_user_id",
-                    "created_by_user_id",
-                    "creator_user_id",
-                    "created_by",
-                    "owner_id",
-                ):
-                    value = metadata.get(key)
-                    if value:
-                        return str(value)
-        tenant_admin = self._human_handoff_tenant_admin_user_id(tenant_id)
-        if tenant_admin:
-            return tenant_admin
-        return fallback_user_id
+        return HumanHandoffService(self.db, getattr(self, "events", None)).assignee_user_id(
+            tenant_id,
+            agent_id,
+            fallback_user_id,
+            tenant_admin_resolver=self._human_handoff_tenant_admin_user_id,
+        )
 
     def _human_handoff_tenant_admin_user_id(self, tenant_id: str) -> str | None:
-        row = self.db.exec(
-            select(User)
-            .where(User.tenant_id == tenant_id, User.role == "admin")
-            .order_by(User.created_at)
-        ).first()
-        return row.id if row else None
+        return HumanHandoffService(
+            self.db, getattr(self, "events", None)
+        ).tenant_admin_user_id(tenant_id)
 
     def _human_handoff_context_summary(self, chat_session: ChatSession) -> str:
-        rows = self.db.exec(
-            select(Message)
-            .where(Message.session_id == chat_session.id)
-            .order_by(Message.created_at.desc())
-            .limit(8)
-        ).all()
-        lines: list[str] = []
-        for message in reversed(rows):
-            content = re.sub(r"\s+", " ", message.content or "").strip()
-            if not content:
-                continue
-            lines.append(f"{message.role}: {content[:240]}")
-        return "\n".join(lines)
+        return HumanHandoffService(
+            self.db, getattr(self, "events", None)
+        ).context_summary(chat_session)
 
     def _human_handoff_pending_question(
         self, current_step: dict[str, Any] | None, step_result: StepAgentResult
     ) -> str:
-        candidates: list[Any] = [
-            step_result.reply,
-            current_step.get("handoff_question") if current_step else None,
-            current_step.get("question") if current_step else None,
-            current_step.get("name") if current_step else None,
-        ]
-        for candidate in candidates:
-            text = re.sub(r"\s+", " ", str(candidate or "")).strip()
-            if text:
-                return text[:600]
-        return "当前 SOP 需要人工确认后继续执行。"
+        return HumanHandoffService.pending_question(current_step, step_result)
 
     def _generate_reply_segment(
         self,
@@ -3105,15 +2884,13 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> QueuedTaskContinuation | None:
-        if not replies and not task_results:
-            return None
-        return QueuedTaskContinuation(
-            reply="\n\n".join(replies).strip(),
-            task_results=task_results,
-            active_skill=active_skill,
-            router_decision=router_decision,
-            step_result=step_result,
-            tool_result=tool_result,
+        return TaskFramePolicy.queued_continuation(
+            replies,
+            task_results,
+            active_skill,
+            router_decision,
+            step_result,
+            tool_result,
         )
 
     def _should_attempt_queued_task_followup(
@@ -3157,10 +2934,7 @@ class AgentLoop:
     def _merge_queued_reply_segment(
         self, replies: list[str], segment: str
     ) -> tuple[list[str], bool]:
-        clean_segment = str(segment or "").strip()
-        if not clean_segment:
-            return replies, False
-        return [*replies, clean_segment], False
+        return TaskFramePolicy.merge_reply_segment(replies, segment)
 
     def _router_decision_from_task_frame(
         self,
@@ -3171,70 +2945,23 @@ class AgentLoop:
         frame = self._find_task_frame(chat_session, task_id)
         if not frame:
             return None
-        skill_id = frame.get("skill_id") or frame.get("target_skill_id")
-        if not skill_id:
-            return None
-        slot_hints = {}
-        if isinstance(frame.get("slots"), dict):
-            slot_hints = dict(frame["slots"])
-        elif isinstance(frame.get("slot_hints"), dict):
-            slot_hints = dict(frame["slot_hints"])
-        return RouterDecision(
-            decision="switch_to_pending",
-            selected_task_id=str(task_id),
-            target_skill_id=str(skill_id),
-            target_step_id=frame.get("step_id") or frame.get("target_step_id"),
-            confidence=float(frame.get("confidence") or 0.0),
-            user_intent=frame.get("intent_summary") or frame.get("user_intent"),
-            reason=order_reason or frame.get("reason"),
-            source_message=frame.get("source_message"),
-            slot_hints=slot_hints,
-        )
+        return TaskFramePolicy.decision_from_frame(frame, task_id, order_reason)
 
     def _find_task_frame(self, chat_session: ChatSession, task_id: str) -> dict[str, Any] | None:
-        for frame in chat_session.pending_tasks_json or []:
-            if isinstance(frame, dict) and str(frame.get("task_id") or "") == str(task_id):
-                return frame
-        return None
+        return TaskFramePolicy.find(chat_session, task_id)
 
     def _turn_followup_task_frames(
         self, router_decision: RouterDecision
     ) -> list[PendingTask]:
-        frames = list(router_decision.task_frames or [])
-        if not frames:
-            return []
-        first = frames[0]
-        if first.target_skill_id == router_decision.target_skill_id:
-            return frames[1:]
-        return frames
+        return TaskFramePolicy.turn_followup_frames(router_decision)
 
     def _router_decision_from_turn_task_frame(
         self, frame: PendingTask
     ) -> RouterDecision:
-        return RouterDecision(
-            decision="start_new_task",
-            target_skill_id=frame.target_skill_id,
-            target_step_id=frame.target_step_id,
-            confidence=frame.confidence,
-            user_intent=frame.user_intent,
-            reason=frame.reason or "按 Router 本轮 task_frames 顺序继续执行。",
-            source_message=frame.source_message,
-            slot_hints=dict(frame.slot_hints or {}),
-            task_frames=[frame],
-        )
+        return TaskFramePolicy.decision_from_turn_frame(frame)
 
     def _next_pending_task_id(self, chat_session: ChatSession) -> str | None:
-        for frame in chat_session.pending_tasks_json or []:
-            if not isinstance(frame, dict):
-                continue
-            if str(frame.get("status") or "pending") != "pending":
-                continue
-            if not (frame.get("skill_id") or frame.get("target_skill_id")):
-                continue
-            task_id = str(frame.get("task_id") or "").strip()
-            if task_id:
-                return task_id
-        return None
+        return TaskFramePolicy.next_pending_task_id(chat_session)
 
     def _run_reflection_rounds(
         self,
@@ -5166,26 +4893,14 @@ class AgentLoop:
         tool_call: ToolCall,
         tool_result: ToolResult,
     ) -> None:
-        slots = dict(chat_session.slots_json or {})
-        history = self._tool_call_history(slots)
-        signature = self._tool_call_signature(tool_call)
-        if signature not in {self._tool_history_signature(item) for item in history}:
-            history.append({"tool_name": tool_call.name, "arguments": tool_call.arguments})
-
-        results = slots.get(TOOL_RESULTS_SLOT)
-        result_items = list(results) if isinstance(results, list) else []
-        result_items.append(
-            {
-                "tool_name": tool_call.name,
-                "arguments": tool_call.arguments,
-                "success": tool_result.success,
-                "data": tool_result.data,
-                "error": tool_result.error.model_dump() if tool_result.error else None,
-            }
+        chat_session.slots_json = ToolReplayPolicy.record_result(
+            chat_session.slots_json or {},
+            tool_call,
+            tool_result,
+            history_reader=self._tool_call_history,
+            call_signature=self._tool_call_signature,
+            history_signature=self._tool_history_signature,
         )
-        slots[TOOL_CALL_HISTORY_SLOT] = history
-        slots[TOOL_RESULTS_SLOT] = result_items
-        chat_session.slots_json = slots
 
     def _tool_call_history(self, slots: dict[str, Any]) -> list[dict[str, Any]]:
         history = slots.get(TOOL_CALL_HISTORY_SLOT)
@@ -5203,72 +4918,17 @@ class AgentLoop:
         return self._tool_signature(tool_call.name, tool_call.arguments)
 
     def _tool_signature(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        return json.dumps(
-            {"tool_name": tool_name, "arguments": arguments},
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
+        return ToolReplayPolicy.signature(tool_name, arguments)
 
     def _tool_idempotency_config(self, tool: Tool) -> tuple[bool | None, list[str] | None]:
-        raw_config = tool.config_json if isinstance(tool.config_json, dict) else {}
-        raw_schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
-        config = raw_config.get("idempotency", raw_config.get("idempotency_policy"))
-        if config is None:
-            config = raw_schema.get("x-idempotency", raw_schema.get("x_idempotency"))
-        enabled: bool | None = None
-        key_fields: list[str] | None = None
-        if isinstance(config, dict):
-            enabled = self._idempotency_enabled_value(
-                config.get("enabled", config.get("mode", config.get("scope")))
-            )
-            fields = (
-                config.get("key_fields") or config.get("fields") or config.get("argument_fields")
-            )
-            if isinstance(fields, list):
-                key_fields = [str(item).strip() for item in fields if str(item).strip()]
-        else:
-            enabled = self._idempotency_enabled_value(config)
-
-        requires_confirmation = raw_config.get(
-            "requires_confirmation", raw_schema.get("requires_confirmation")
+        return ToolReplayPolicy.configuration(
+            tool.config_json if isinstance(tool.config_json, dict) else {},
+            tool.input_schema if isinstance(tool.input_schema, dict) else {},
+            enabled_parser=self._idempotency_enabled_value,
         )
-        confirmation_enabled = self._idempotency_enabled_value(requires_confirmation)
-        if enabled is None and confirmation_enabled is True:
-            enabled = True
-        return enabled, key_fields
 
     def _idempotency_enabled_value(self, value: object) -> bool | None:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return value
-        normalized = str(value).strip().lower()
-        if normalized in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "enabled",
-            "enable",
-            "replay",
-            "session",
-            "session_arguments",
-        }:
-            return True
-        if normalized in {
-            "0",
-            "false",
-            "no",
-            "off",
-            "disabled",
-            "disable",
-            "none",
-            "read_only",
-            "readonly",
-        }:
-            return False
-        return None
+        return ToolReplayPolicy.enabled_value(value)
 
     def _tool_requires_idempotent_replay(
         self, tenant_id: str, tool_call: ToolCall
@@ -5290,16 +4950,14 @@ class AgentLoop:
         if configured is not None:
             return configured, key_fields
         method = str(tool.method or "").upper()
-        if method not in IDEMPOTENT_WRITE_METHODS:
+        if not ToolReplayPolicy.default_replay_enabled(method):
             return False, None
         return True, key_fields
 
     def _idempotency_arguments(
         self, arguments: dict[str, Any], key_fields: list[str] | None
     ) -> dict[str, Any]:
-        if not key_fields:
-            return arguments
-        return {field: arguments.get(field) for field in key_fields if field in arguments}
+        return ToolReplayPolicy.arguments(arguments, key_fields)
 
     def _previous_successful_side_effect_tool_result(
         self,
@@ -6479,10 +6137,7 @@ class AgentLoop:
 
     @staticmethod
     def _context_compacted_now(context: dict[str, object] | None) -> bool:
-        if not isinstance(context, dict):
-            return False
-        metadata = context.get("metadata")
-        return isinstance(metadata, dict) and metadata.get("compacted_now") is True
+        return LegacyConversationProjection.context_compacted_now(context)
 
     def _context_summary_builder(
         self, model_config: ModelConfig
@@ -6511,16 +6166,7 @@ class AgentLoop:
         return summarize
 
     def _message_context_entry(self, row: Message) -> dict[str, Any]:
-        entry: dict[str, Any] = {
-            "id": row.id,
-            "role": row.role,
-            "content": message_content_with_attachment_context(row.content, row.metadata_json),
-            "created_at": row.created_at,
-        }
-        images = message_images_from_metadata(row.metadata_json)
-        if images and row.role == "user":
-            entry["images"] = images
-        return entry
+        return LegacyConversationProjection.message_context_entry(row)
 
     def _assistant_message_metadata(
         self,
@@ -6528,49 +6174,12 @@ class AgentLoop:
         chat_session: ChatSession,
         source_message: str | None = None,
     ) -> dict[str, Any]:
-        knowledge_results = list(step_result.knowledge_results or []) if step_result else []
-        citations = self._dedupe_knowledge_citations(
-            knowledge_citations_from_results(knowledge_results)
+        return LegacyConversationProjection.assistant_message_metadata(
+            step_result, citation_deduper=self._dedupe_knowledge_citations
         )
-        if not citations:
-            return {}
-        first_query = next(
-            (
-                item.get("query")
-                for item in knowledge_results
-                if isinstance(item.get("query"), dict)
-            ),
-            None,
-        )
-        return {
-            "knowledge_citations": citations,
-            "knowledge_query": first_query or {},
-        }
 
     def _dedupe_knowledge_citations(self, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        seen: set[str] = set()
-        result: list[dict[str, Any]] = []
-        for citation in citations:
-            if not isinstance(citation, dict):
-                continue
-            identity = str(
-                citation.get("title")
-                or citation.get("section_path")
-                or citation.get("summary")
-                or citation.get("excerpt")
-                or citation.get("source_path")
-                or citation.get("concept_id")
-                or citation.get("id")
-                or ""
-            )
-            key = re.sub(r"\s+", " ", identity).strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            result.append({**citation, "label": f"[{len(result) + 1}]"})
-            if len(result) >= 4:
-                break
-        return result
+        return LegacyConversationProjection.dedupe_knowledge_citations(citations)
 
     def _append_message(
         self,
@@ -6669,16 +6278,7 @@ class AgentLoop:
         return assistant_message
 
     def _user_message_metadata(self, request: ChatTurnRequest) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        if request.client_turn_id:
-            metadata["client_turn_id"] = request.client_turn_id
-        if request.interaction_mode == "scheduled_task":
-            metadata["interaction_mode"] = "scheduled_task"
-        if request.model_config_id:
-            metadata["model_config_id"] = request.model_config_id
-        if request.attachments:
-            metadata["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
-        return metadata
+        return LegacyConversationProjection.user_message_metadata(request)
 
     def _record_runtime_event(
         self,
@@ -6731,13 +6331,9 @@ class AgentLoop:
         before_step: str | None,
         chat_session: ChatSession,
     ) -> dict[str, object]:
-        return {
-            "runtimeDecision": decision.decision,
-            "fromSkillId": before_skill,
-            "fromStepId": before_step,
-            "toSkillId": chat_session.active_skill_id,
-            "toStepId": chat_session.active_step_id,
-        }
+        return LegacyConversationProjection.runtime_stream_context(
+            decision, before_skill, before_step, chat_session
+        )
 
     def _skill_state_payload(
         self,
@@ -6747,43 +6343,9 @@ class AgentLoop:
         *,
         user_message_id: str | None = None,
     ) -> dict[str, object]:
-        skill_names = {skill.skill_id: skill.name for skill in skills}
-        visible_skill_ids = set(skill_names)
-        current_skills: list[dict[str, object]] = []
-        active_skill_id = (
-            chat_session.active_skill_id
-            if chat_session.active_skill_id in visible_skill_ids
-            else None
+        payload = LegacyConversationProjection.skill_state_payload(
+            chat_session, skills, runtime_context
         )
-        if active_skill_id:
-            current_skills.append(
-                {
-                    "skillId": active_skill_id,
-                    "name": skill_names.get(active_skill_id, active_skill_id),
-                    "stepId": chat_session.active_step_id,
-                    "state": "active",
-                }
-            )
-        for task in chat_session.pending_tasks_json or []:
-            if not isinstance(task, dict):
-                continue
-            skill_id = str(task.get("target_skill_id") or task.get("skill_id") or "").strip()
-            if not skill_id or skill_id not in visible_skill_ids:
-                continue
-            current_skills.append(
-                {
-                    "skillId": skill_id,
-                    "name": skill_names.get(skill_id, skill_id),
-                    "stepId": task.get("target_step_id") or task.get("step_id"),
-                    "state": task.get("status") or "pending",
-                }
-            )
-        payload = {
-            "activeSkillId": active_skill_id,
-            "activeStepId": chat_session.active_step_id if active_skill_id else None,
-            "currentSkills": current_skills,
-            **(runtime_context or {}),
-        }
         return self._turn_payload(payload, user_message_id)
 
     def _tool_activity_payload(
@@ -6996,30 +6558,10 @@ class AgentLoop:
 
     @staticmethod
     def _fallback_session_title_from_message(message: str) -> str:
-        title = re.sub(r"\s+", " ", message).strip().strip("。！？!?")
-        if not title:
-            return ""
-        return title[:28]
+        return LegacyConversationProjection.fallback_session_title(message)
 
     def _normalize_reply_citation_labels(self, reply: str, citations: object) -> str:
-        if not isinstance(citations, list) or not citations:
-            return reply
-        max_label = len(citations)
-
-        def replace(match: re.Match[str]) -> str:
-            try:
-                value = int(match.group(1))
-            except ValueError:
-                return match.group(0)
-            if 1 <= value <= max_label:
-                return match.group(0)
-            return f"[{max_label if max_label > 1 else 1}]"
-
-        return re.sub(r"\[(\d+)\]", replace, reply)
+        return LegacyConversationProjection.normalize_reply_citation_labels(reply, citations)
 
     def _strip_trailing_citation_summary(self, reply: str) -> str:
-        return re.sub(
-            r"(?:\n|\s){0,3}(?:参考资料|引用来源|资料来源)\s*[:：]\s*(?:\[\d+\]\s*)+$",
-            "",
-            reply.rstrip(),
-        ).rstrip()
+        return LegacyConversationProjection.strip_trailing_citation_summary(reply)
