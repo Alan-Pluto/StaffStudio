@@ -3,8 +3,15 @@ from typing import Any
 import app.core.agent_loop as agent_loop_module
 from app.core.agent_loop import AgentLoop
 from app.core.human_handoff_service import HumanHandoffService
+from app.core.legacy_tool_action import LegacyToolAction
 from app.db.models import ChatSession, Skill, Tool
-from app.session.session_schema import AwaitingInput, RouterDecision, StepAgentResult
+from app.knowledge.schema import KnowledgeSearchResponse
+from app.session.session_schema import (
+    AwaitingInput,
+    ChatTurnRequest,
+    RouterDecision,
+    StepAgentResult,
+)
 from app.tools.tool_schema import ToolCall, ToolResult
 
 
@@ -206,3 +213,66 @@ def test_persona_prompt_preserves_module_level_patch_seams(monkeypatch) -> None:
     )
 
     assert loop._get_persona_prompt("tenant", "agent") == "patched persona"
+
+
+def test_tool_action_preserves_agent_loop_id_seam(monkeypatch) -> None:
+    loop = _loop()
+    loop.db = object()  # type: ignore[assignment]
+    loop.events = object()  # type: ignore[assignment]
+    generated: list[str] = []
+    monkeypatch.setattr(
+        agent_loop_module,
+        "new_id",
+        lambda prefix: generated.append(prefix) or "patched-id",
+    )
+
+    def fake_execute(service: LegacyToolAction, *args: Any) -> tuple[Any, None]:
+        callbacks = args[-1]
+        assert callbacks.new_id("toolcall") == "patched-id"
+        assert callbacks.is_general_skill_tool("custom.run")
+        return args[5], None
+
+    monkeypatch.setattr(LegacyToolAction, "execute_cycle", fake_execute)
+    monkeypatch.setattr(agent_loop_module, "GENERAL_SKILL_TOOL_PREFIX", "custom.")
+    result = StepAgentResult()
+    returned, tool_result = loop._execute_tool_action_cycle(
+        ChatTurnRequest(tenant_id="tenant", message="test"),
+        ChatSession(id="session", tenant_id="tenant"),
+        None,
+        [],
+        None,
+        result,
+    )
+
+    assert returned is result
+    assert tool_result is None
+    assert generated == ["toolcall"]
+
+
+def test_knowledge_action_preserves_agent_loop_service_factory_seam(monkeypatch) -> None:
+    loop = _loop()
+    loop.db = object()  # type: ignore[assignment]
+    loop.events = object()  # type: ignore[assignment]
+    monkeypatch.setattr(loop, "_agent_visible_knowledge_base_ids", lambda *args: [])
+    monkeypatch.setattr(loop, "_agent_requires_resource_filter", lambda *args: False)
+    created: list[object] = []
+
+    class FakeKnowledgeService:
+        def __init__(self, db: object) -> None:
+            created.append(db)
+
+        def search(self, request: object, model_config: object) -> KnowledgeSearchResponse:
+            return KnowledgeSearchResponse(
+                selected_buckets=[],
+                chunks=[],
+                trace=[],
+                route_trace=[],
+                selected_documents=[],
+                expanded_sections=[],
+                evidence_pack=[],
+            )
+
+    monkeypatch.setattr(agent_loop_module, "KnowledgeService", FakeKnowledgeService)
+
+    assert loop._knowledge_items_for_message("tenant", "agent", "question") is None
+    assert created == [loop.db]

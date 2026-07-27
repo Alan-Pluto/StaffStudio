@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import queue
-import re
 import threading
 import traceback
 from collections.abc import Callable, Iterator
-from contextvars import ContextVar
 from dataclasses import dataclass
 from time import sleep
 from types import SimpleNamespace
@@ -30,6 +28,14 @@ from app.core.conversation_context import build_conversation_context
 from app.core.human_handoff_service import HumanHandoffService
 from app.core.legacy_conversation_projection import LegacyConversationProjection
 from app.core.legacy_graph_rules import LegacyGraphRules
+from app.core.legacy_knowledge_action import (
+    KNOWLEDGE_RESULTS_CACHE as _KNOWLEDGE_RESULTS_CACHE,
+)
+from app.core.legacy_knowledge_action import (
+    KNOWLEDGE_STEPS_SEEN as _KNOWLEDGE_STEPS_SEEN,
+)
+from app.core.legacy_knowledge_action import LegacyKnowledgeAction
+from app.core.legacy_tool_action import LegacyToolAction, LegacyToolActionCallbacks
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import (
     FALLBACK_REPLY,
@@ -71,7 +77,6 @@ from app.knowledge.citations import (
     knowledge_citations_from_results,
     restore_truncated_atomic_references,
 )
-from app.knowledge.schema import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
@@ -102,12 +107,6 @@ GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
 ERROR_TRACEBACK_CHAR_LIMIT = 6000
-_KNOWLEDGE_STEPS_SEEN: ContextVar[set[tuple[str, str]] | None] = ContextVar(
-    "knowledge_steps_seen", default=None
-)
-_KNOWLEDGE_RESULTS_CACHE: ContextVar[
-    dict[tuple[str, str], dict[str, Any]] | None
-] = ContextVar("knowledge_results_cache", default=None)
 ExecutionFinalizeState = Literal["continued", "completed", "handoff"]
 
 
@@ -220,8 +219,7 @@ class AgentLoop:
         return SlotHydrationPolicy.trim_satisfied_awaiting_fields(router_decision, slots)
 
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
-        _KNOWLEDGE_STEPS_SEEN.set(set())
-        _KNOWLEDGE_RESULTS_CACHE.set({})
+        LegacyKnowledgeAction.reset_turn()
         router_decision: RouterDecision | None = None
         step_result = StepAgentResult()
         tool_result: ToolResult | None = None
@@ -1225,8 +1223,7 @@ class AgentLoop:
         )
 
     def handle_turn_stream(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
-        _KNOWLEDGE_STEPS_SEEN.set(set())
-        _KNOWLEDGE_RESULTS_CACHE.set({})
+        LegacyKnowledgeAction.reset_turn()
         router_decision: RouterDecision | None = None
         step_result = StepAgentResult()
         tool_result: ToolResult | None = None
@@ -3530,171 +3527,35 @@ class AgentLoop:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> tuple[StepAgentResult, ToolResult | None]:
-        tool_result: ToolResult | None = None
-        current_knowledge = list(step_result.knowledge_results or [])
-        seen_calls: set[str] = set()
-        max_actions = self._get_agent_loop_max_actions(request.tenant_id)
-        for iteration in range(max_actions):
-            tool_call = step_result.tool_call
-            if not tool_call:
-                break
-            tool_call_id = new_id("toolcall")
-            signature = self._tool_call_signature(tool_call)
-            if signature in seen_calls:
-                if tool_result and tool_result.success and step_result.reply:
-                    step_result = step_result.model_copy(
-                        update={"tool_call": None, "is_step_completed": True}
-                    )
-                    payload = self._tool_loop_decision_payload(
-                        iteration + 1, "respond_after_duplicate"
-                    )
-                    self.events.record(
-                        request.tenant_id, chat_session.id, "agent_loop_completed", payload
-                    )
-                    if stream_events is not None:
-                        stream_events.append(("agent_loop_completed", payload))
-                    break
-                self.events.record(
-                    request.tenant_id,
-                    chat_session.id,
-                    "agent_loop_stopped",
-                    {"reason": "duplicate_tool_call", "tool_call": tool_call.model_dump()},
-                )
-                break
-            seen_calls.add(signature)
-            self._emit_tool_status(tool_call, tool_call_id, stream_events, status_callback)
-            tool_result = self._execute_tool_call(
-                request,
-                chat_session,
-                tool_call,
-                tool_call_id,
-                stream_events=stream_events,
-                conversation_context=conversation_context,
-                memory_context=memory_context,
-            )
-            self._record_tool_result_in_slots(chat_session, tool_call, tool_result)
-            if stream_events is not None:
-                stream_events.append(
-                    (
-                        "tool_result",
-                        self._tool_activity_payload(
-                            request.tenant_id,
-                            tool_call.name,
-                            tool_result,
-                            tool_call,
-                            tool_call_id,
-                        ),
-                    )
-                )
-            self.db.commit()
-            self.db.refresh(chat_session)
-            if not tool_result.success:
-                if (
-                    model_config
-                    and tool_call.name.startswith(GENERAL_SKILL_TOOL_PREFIX)
-                    and active_skill is not None
-                ):
-                    self._emit_thinking_status(
-                        chat_session, iteration + 1, stream_events, status_callback
-                    )
-                    continuation_result = self._run_step_agent_once(
-                        request,
-                        chat_session,
-                        active_skill,
-                        tools,
-                        model_config,
-                        repair_reason="tool_continuation",
-                        repair_context=self._tool_continuation_context(
-                            request.tenant_id,
-                            tool_call,
-                            tool_result,
-                            chat_session,
-                            iteration + 1,
-                        ),
-                        memory_context=memory_context,
-                        conversation_context=conversation_context,
-                        current_knowledge=current_knowledge,
-                        allow_general_skill_selection=False,
-                    )
-                    self._apply_step_result(
-                        request.tenant_id,
-                        chat_session,
-                        continuation_result,
-                        active_skill,
-                    )
-                    self.db.commit()
-                    self.db.refresh(chat_session)
-                    step_result = continuation_result
-                break
-
-            if not model_config:
-                self._advance_after_successful_tool(
-                    request.tenant_id, chat_session, active_skill, step_result, tool_result
-                )
-                self.db.commit()
-                self.db.refresh(chat_session)
-                break
-
-            self._emit_thinking_status(chat_session, iteration + 1, stream_events, status_callback)
-            continuation_result = self._run_step_agent_once(
-                request,
-                chat_session,
-                active_skill,
-                tools,
-                model_config,
-                repair_reason="tool_continuation",
-                repair_context=self._tool_continuation_context(
-                    request.tenant_id,
-                    tool_call,
-                    tool_result,
-                    chat_session,
-                    iteration + 1,
-                ),
-                memory_context=memory_context,
-                conversation_context=conversation_context,
-                current_knowledge=current_knowledge,
-                allow_general_skill_selection=False,
-            )
-            if current_knowledge and not continuation_result.knowledge_results:
-                continuation_result.knowledge_results = current_knowledge
-            self._apply_step_result(
-                request.tenant_id, chat_session, continuation_result, active_skill
-            )
-            self.db.commit()
-            self.db.refresh(chat_session)
-            step_result = continuation_result
-            if step_result.tool_call:
-                payload = self._tool_loop_decision_payload(
-                    iteration + 1,
-                    "model_tool_call",
-                    step_result.tool_call,
-                )
-                self.events.record(
-                    request.tenant_id, chat_session.id, "agent_loop_continued", payload
-                )
-                if stream_events is not None:
-                    stream_events.append(("agent_loop_continued", payload))
-                continue
-
-            payload = self._tool_loop_decision_payload(iteration + 1, "respond")
-            self.events.record(request.tenant_id, chat_session.id, "agent_loop_completed", payload)
-            if stream_events is not None:
-                stream_events.append(("agent_loop_completed", payload))
-            self._advance_after_successful_tool(
-                request.tenant_id,
-                chat_session,
-                active_skill,
-                StepAgentResult(
-                    tool_call=tool_call,
-                    next_step_id=step_result.next_step_id,
-                    is_step_completed=True,
-                ),
-                tool_result,
-            )
-            self.db.commit()
-            self.db.refresh(chat_session)
-            break
-        return step_result, tool_result
+        callbacks = LegacyToolActionCallbacks(
+            max_actions=self._get_agent_loop_max_actions,
+            decision_payload=self._tool_loop_decision_payload,
+            new_id=new_id,
+            is_general_skill_tool=lambda name: name.startswith(GENERAL_SKILL_TOOL_PREFIX),
+            call_signature=self._tool_call_signature,
+            emit_tool_status=self._emit_tool_status,
+            execute_tool_call=self._execute_tool_call,
+            record_result=self._record_tool_result_in_slots,
+            activity_payload=self._tool_activity_payload,
+            emit_thinking_status=self._emit_thinking_status,
+            run_step=self._run_step_agent_once,
+            continuation_context=self._tool_continuation_context,
+            apply_result=self._apply_step_result,
+            advance_after_tool=self._advance_after_successful_tool,
+        )
+        return LegacyToolAction(self.db, self.events).execute_cycle(
+            request,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            step_result,
+            stream_events,
+            status_callback,
+            conversation_context,
+            memory_context,
+            callbacks,
+        )
 
     def _execute_knowledge_query_cycle(
         self,
@@ -3709,149 +3570,26 @@ class AgentLoop:
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
         status_callback: StatusCallback | None = None,
     ) -> StepAgentResult:
-        query = step_result.knowledge_query
-        if not query or not query.query.strip():
-            return step_result
-        knowledge_key = self._knowledge_step_key(chat_session, active_skill)
-        if not self._claim_knowledge_query(chat_session, active_skill):
-            cached = (_KNOWLEDGE_RESULTS_CACHE.get() or {}).get(knowledge_key)
-            if cached is None:
-                return step_result
-            return self._continue_after_knowledge_query(
-                request,
-                chat_session,
-                active_skill,
-                tools,
-                model_config,
-                cached,
-                memory_context,
-                conversation_context,
-            )
-        query_scope = dict(query.scope or {})
-        runtime_forced = bool(query_scope.pop("_runtime_forced", False))
-        payload = {
-            "phase": "knowledge",
-            "text": "正在检索知识",
-            "query": query.model_dump(mode="json"),
-            "active_skill_id": chat_session.active_skill_id,
-            "active_step_id": chat_session.active_step_id,
-        }
-        self.events.record(request.tenant_id, chat_session.id, "knowledge_query_started", payload)
-        if stream_events is not None:
-            stream_events.append(("status", payload))
-        if status_callback is not None:
-            status_callback("knowledge", payload)
-
-        try:
-            knowledge_base_ids = self._agent_visible_knowledge_base_ids(
-                request.tenant_id,
-                chat_session.agent_id,
-            )
-            scoped_knowledge_base_ids = _knowledge_scope_ids(
-                query_scope, "knowledge_base_ids", "knowledge_base_id"
-            )
-            if scoped_knowledge_base_ids:
-                knowledge_base_ids = [
-                    item for item in knowledge_base_ids if item in scoped_knowledge_base_ids
-                ]
-            if (
-                self._agent_requires_resource_filter(request.tenant_id, chat_session.agent_id)
-                and not knowledge_base_ids
-            ):
-                search_response = KnowledgeSearchResponse(
-                    selected_buckets=[],
-                    chunks=[],
-                    trace=[],
-                    route_trace=[],
-                    selected_documents=[],
-                    expanded_sections=[],
-                    evidence_pack=[],
-                )
-            else:
-                search_query = query.query.strip()
-                original_message = request.message.strip()
-                if not runtime_forced and original_message and original_message not in search_query:
-                    search_query = f"{search_query}\n{original_message}"
-                search_response = KnowledgeService(self.db).search(
-                    KnowledgeSearchRequest(
-                        tenant_id=request.tenant_id,
-                        agent_id=chat_session.agent_id,
-                        query=search_query,
-                        query_type=query.query_type,
-                        desired_evidence=query.desired_evidence,
-                        scope=query_scope,
-                        mode="chat",
-                        knowledge_base_ids=knowledge_base_ids,
-                        knowledge_base_version_ids=_knowledge_scope_ids(
-                            query_scope,
-                            "knowledge_base_version_ids",
-                            "knowledge_base_version_id",
-                        ),
-                        document_ids=_knowledge_scope_ids(
-                            query_scope, "document_ids", "document_id"
-                        ),
-                        max_chunks=max(1, min(query.max_chunks, 12)),
-                        max_buckets=4,
-                        max_depth=max(1, min(query.max_depth, 4)),
-                        need_evidence_pack=True,
-                    ),
-                    model_config,
-                )
-        except Exception as exc:
-            failed_payload = {
-                "phase": "knowledge",
-                "active_skill_id": chat_session.active_skill_id,
-                "active_step_id": chat_session.active_step_id,
-                "error_type": type(exc).__name__,
-            }
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "knowledge_query_failed",
-                failed_payload,
-            )
-            if stream_events is not None:
-                stream_events.append(("knowledge_query_failed", failed_payload))
-            raise
-        knowledge_items = {
-            "query": query.model_dump(mode="json"),
-            "source_message": None if runtime_forced else request.message,
-            "selected_buckets": [
-                item.model_dump(mode="json") for item in search_response.selected_buckets
-            ],
-            "chunks": [item.model_dump(mode="json") for item in search_response.chunks],
-            "trace": search_response.route_trace or search_response.trace,
-            "selected_documents": search_response.selected_documents,
-            "selected_concepts": search_response.selected_concepts,
-            "expanded_sections": search_response.expanded_sections,
-            "okf_citations": search_response.okf_citations,
-            "evidence_pack": search_response.evidence_pack,
-        }
-        cache = _KNOWLEDGE_RESULTS_CACHE.get()
-        if cache is None:
-            cache = {}
-            _KNOWLEDGE_RESULTS_CACHE.set(cache)
-        cache[knowledge_key] = knowledge_items
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "knowledge_query_finished",
-            knowledge_items,
-        )
-        if stream_events is not None:
-            for trace in search_response.route_trace or search_response.trace:
-                stream_events.append(("status", {"phase": "knowledge", **trace}))
-            stream_events.append(("knowledge_result", knowledge_items))
-
-        return self._continue_after_knowledge_query(
+        return LegacyKnowledgeAction(
+            getattr(self, "db", None), getattr(self, "events", None)
+        ).execute_cycle(
             request,
             chat_session,
             active_skill,
             tools,
             model_config,
-            knowledge_items,
+            step_result,
             memory_context,
             conversation_context,
+            stream_events,
+            status_callback,
+            key_resolver=self._knowledge_step_key,
+            query_claimer=self._claim_knowledge_query,
+            visible_knowledge_base_ids=self._agent_visible_knowledge_base_ids,
+            requires_resource_filter=self._agent_requires_resource_filter,
+            continue_after_query=self._continue_after_knowledge_query,
+            scope_ids=_knowledge_scope_ids,
+            knowledge_service_factory=KnowledgeService,
         )
 
     def _continue_after_knowledge_query(
@@ -3865,26 +3603,20 @@ class AgentLoop:
         memory_context: list[dict[str, object]] | None,
         conversation_context: dict[str, object] | None,
     ) -> StepAgentResult:
-        continuation_result = self._run_step_agent_once(
+        return LegacyKnowledgeAction(
+            getattr(self, "db", None), getattr(self, "events", None)
+        ).continue_after_query(
             request,
             chat_session,
             active_skill,
             tools,
             model_config,
-            repair_reason="knowledge_continuation",
-            repair_context={
-                "reason": "knowledge_continuation",
-                "knowledge_results": knowledge_items,
-                "instruction": "基于知识结果继续判断下一步动作；如果知识足够，推进、调用工具或回复；如果不足，由模型决定是否继续追问或停止。",
-            },
-            memory_context=memory_context,
-            conversation_context=conversation_context,
-            current_knowledge=[knowledge_items],
-            allow_general_skill_selection=False,
+            knowledge_items,
+            memory_context,
+            conversation_context,
+            step_runner=self._run_step_agent_once,
+            result_applier=self._apply_step_result,
         )
-        continuation_result.knowledge_results = [knowledge_items]
-        self._apply_step_result(request.tenant_id, chat_session, continuation_result, active_skill)
-        return continuation_result
 
     def _auto_knowledge_step_result(
         self,
@@ -3896,61 +3628,17 @@ class AgentLoop:
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
         status_callback: StatusCallback | None = None,
     ) -> StepAgentResult:
-        del router_decision
-        if selection is None or not selection.use_knowledge:
-            return StepAgentResult()
-
-        query_text = (selection.knowledge_query or request.message).strip()
-        query = KnowledgeQuery(
-            query=query_text,
-            reason=selection.reason or "第二轮能力选择判断需要企业知识",
-            max_chunks=8,
-            max_depth=3,
-        )
-        payload = {
-            "phase": "knowledge",
-            "text": "正在检索业务资料",
-            "query": query.model_dump(mode="json"),
-            "auto": True,
-        }
-        self.events.record(request.tenant_id, chat_session.id, "knowledge_query_started", payload)
-        if stream_events is not None:
-            stream_events.append(("status", payload))
-        if status_callback is not None:
-            status_callback("knowledge", payload)
-
-        knowledge_items = self._knowledge_items_for_message(
-            request.tenant_id,
-            chat_session.agent_id,
-            request.message,
-            query,
+        return LegacyKnowledgeAction(
+            getattr(self, "db", None), getattr(self, "events", None)
+        ).auto_step_result(
+            request,
+            chat_session,
             model_config,
-        )
-        finished_payload = knowledge_items or {
-            "query": query.model_dump(mode="json"),
-            "source_message": request.message,
-            "selected_buckets": [],
-            "chunks": [],
-            "trace": [],
-            "selected_documents": [],
-            "selected_concepts": [],
-            "expanded_sections": [],
-            "okf_citations": [],
-            "evidence_pack": [],
-        }
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "knowledge_query_finished",
-            {**finished_payload, "auto": True},
-        )
-        if stream_events is not None:
-            for trace in finished_payload.get("trace") or []:
-                stream_events.append(("status", {"phase": "knowledge", **trace}))
-            stream_events.append(("knowledge_result", finished_payload))
-        return StepAgentResult(
-            knowledge_query=query,
-            knowledge_results=[knowledge_items] if knowledge_items else [],
+            router_decision,
+            selection,
+            stream_events,
+            status_callback,
+            items_loader=self._knowledge_items_for_message,
         )
 
     def _knowledge_items_for_message(
@@ -3961,70 +3649,19 @@ class AgentLoop:
         query: KnowledgeQuery | None = None,
         model_config: ModelConfig | None = None,
     ) -> dict[str, Any] | None:
-        knowledge_base_ids = self._agent_visible_knowledge_base_ids(tenant_id, agent_id)
-        query_scope = dict((query.scope if query else {}) or {})
-        query_scope.pop("_runtime_forced", None)
-        scoped_knowledge_base_ids = _knowledge_scope_ids(
-            query_scope, "knowledge_base_ids", "knowledge_base_id"
-        )
-        if scoped_knowledge_base_ids:
-            knowledge_base_ids = [
-                item for item in knowledge_base_ids if item in scoped_knowledge_base_ids
-            ]
-        if self._agent_requires_resource_filter(tenant_id, agent_id) and not knowledge_base_ids:
-            return None
-        knowledge_query = query or KnowledgeQuery(
-            query=message,
-            reason="用户要求基于业务资料或规则回答",
-            max_chunks=8,
-            max_depth=3,
-        )
-        search_response = KnowledgeService(self.db).search(
-            KnowledgeSearchRequest(
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                query=knowledge_query.query.strip() or message,
-                query_type=knowledge_query.query_type,
-                desired_evidence=knowledge_query.desired_evidence,
-                scope=query_scope,
-                mode="chat",
-                knowledge_base_ids=knowledge_base_ids,
-                knowledge_base_version_ids=_knowledge_scope_ids(
-                    query_scope,
-                    "knowledge_base_version_ids",
-                    "knowledge_base_version_id",
-                ),
-                document_ids=_knowledge_scope_ids(
-                    query_scope, "document_ids", "document_id"
-                ),
-                max_chunks=8,
-                max_buckets=4,
-                max_depth=3,
-                need_evidence_pack=True,
-            ),
+        return LegacyKnowledgeAction(
+            getattr(self, "db", None), getattr(self, "events", None)
+        ).items_for_message(
+            tenant_id,
+            agent_id,
+            message,
+            query,
             model_config,
+            visible_knowledge_base_ids=self._agent_visible_knowledge_base_ids,
+            requires_resource_filter=self._agent_requires_resource_filter,
+            scope_ids=_knowledge_scope_ids,
+            knowledge_service_factory=KnowledgeService,
         )
-        if not (
-            search_response.selected_concepts
-            or search_response.okf_citations
-            or search_response.evidence_pack
-            or search_response.chunks
-        ):
-            return None
-        return {
-            "query": knowledge_query.model_dump(mode="json"),
-            "source_message": message,
-            "selected_buckets": [
-                item.model_dump(mode="json") for item in search_response.selected_buckets
-            ],
-            "chunks": [item.model_dump(mode="json") for item in search_response.chunks],
-            "trace": search_response.route_trace or search_response.trace,
-            "selected_documents": search_response.selected_documents,
-            "selected_concepts": search_response.selected_concepts,
-            "expanded_sections": search_response.expanded_sections,
-            "okf_citations": search_response.okf_citations,
-            "evidence_pack": search_response.evidence_pack,
-        }
 
     def _tool_continuation_context(
         self,
@@ -4168,95 +3805,26 @@ class AgentLoop:
         active_skill: Skill | None,
         step_result: StepAgentResult,
     ) -> StepAgentResult:
-        if not active_skill:
-            return step_result
-        step = self._current_skill_step(active_skill, chat_session.active_step_id)
-        if not step or str(step.get("type") or "") != "knowledge_query":
-            return step_result
-
-        effective_slots = {
-            **(chat_session.slots_json or {}),
-            **(step_result.slot_updates or {}),
-        }
-        missing_fields = [
-            str(field)
-            for field in step.get("expected_user_info", [])
-            if not self._skill_slot_satisfied(effective_slots, str(field))
-        ]
-        if missing_fields:
-            step_result.action = "ask_user" if step_result.reply else "clarify"
-            step_result.knowledge_query = None
-            step_result.tool_call = None
-            step_result.next_step_id = None
-            step_result.knowledge_results = []
-            step_result.is_step_completed = False
-            step_result.handoff = False
-            return step_result
-
-        forced = step_result.knowledge_query is None
-        if forced:
-            scope = dict(step.get("knowledge_scope") or {})
-            query_fields = scope.pop("query_fields", [])
-            query_parts = [
-                str(step.get("name") or "").strip(),
-                str(step.get("instruction") or "").strip(),
-            ]
-            if isinstance(query_fields, list):
-                for field in query_fields:
-                    field_name = str(field).strip()
-                    if field_name and self._skill_slot_satisfied(effective_slots, field_name):
-                        query_parts.append(f"{field_name}: {effective_slots[field_name]}")
-            scope["_runtime_forced"] = True
-            step_result.knowledge_query = KnowledgeQuery(
-                query="\n".join(part for part in query_parts if part),
-                reason="当前 SOP 节点要求检索知识",
-                scope=scope,
-                query_type="policy_check",
-                max_chunks=8,
-                max_depth=3,
-            )
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "knowledge_query_forced",
-                {
-                    "skill_id": active_skill.skill_id,
-                    "step_id": chat_session.active_step_id,
-                    "reason": "required_knowledge_node_missing_query",
-                },
-            )
-
-        step_result.action = "query_knowledge"
-        step_result.reply = None
-        step_result.tool_call = None
-        step_result.next_step_id = None
-        step_result.knowledge_results = []
-        step_result.is_step_completed = False
-        step_result.handoff = False
-        return step_result
+        return LegacyKnowledgeAction(
+            getattr(self, "db", None), getattr(self, "events", None)
+        ).normalize_required_step(
+            request,
+            chat_session,
+            active_skill,
+            step_result,
+            current_step=self._current_skill_step,
+            slot_satisfied=self._skill_slot_satisfied,
+        )
 
     def _claim_knowledge_query(
         self, chat_session: ChatSession, active_skill: Skill | None
     ) -> bool:
-        if not active_skill or not chat_session.active_step_id:
-            return True
-        seen = _KNOWLEDGE_STEPS_SEEN.get()
-        if seen is None:
-            seen = set()
-            _KNOWLEDGE_STEPS_SEEN.set(seen)
-        key = (active_skill.skill_id, chat_session.active_step_id)
-        if key in seen:
-            return False
-        seen.add(key)
-        return True
+        return LegacyKnowledgeAction.claim_query(chat_session, active_skill)
 
     def _knowledge_step_key(
         self, chat_session: ChatSession, active_skill: Skill | None
     ) -> tuple[str, str]:
-        return (
-            active_skill.skill_id if active_skill else "",
-            str(chat_session.active_step_id or ""),
-        )
+        return LegacyKnowledgeAction.step_key(chat_session, active_skill)
 
     def _preselect_general_skill_for_scene(
         self,
