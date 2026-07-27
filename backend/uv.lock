@@ -1917,7 +1917,7 @@ packaging = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.117.0,<0.118.0" },
+    { name = "anthropic", specifier = ">=0.117.0,<0.121.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.3" },
     { name = "certifi", marker = "extra == 'packaging'", specifier = ">=2024.2.2" },
     { name = "cryptography", specifier = ">=42.0.0,<49.0.0" },
