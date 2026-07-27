@@ -38,20 +38,32 @@ def test_snapshot_freezes_provider_selection_for_a_turn() -> None:
     assert snapshot.snapshot_id
 
 
-def test_legacy_context_keeps_thread_alias_and_distinct_run_identity() -> None:
-    context = CapabilityContext(
-        request_id="req-1",
-        tenant_id="tenant-1",
-        agent_id="agent-1",
-        user_id="user-1",
-        session_id="session-1",
-        turn_id="turn-1",
-        channel="web",
-        run_id="run-1",
+def test_sealed_registry_rejects_runtime_provider_mutation() -> None:
+    registry = CapabilityRegistry()
+    registry.register(
+        CapabilityBinding("knowledge.search", "local", "local-dev", "knowledge.v1", object())
     )
-    assert context.thread_id == "session-1"
-    assert context.turn_id == "turn-1"
-    assert context.run_id == "run-1"
+    registry.seal()
+
+    with pytest.raises(RuntimeError, match="sealed"):
+        registry.register(
+            CapabilityBinding("scene_skill.catalog", "local", "local-dev", "scene.v1", object())
+        )
+    with pytest.raises(RuntimeError, match="sealed"):
+        registry.register_rehydrator("local", "local-dev", lambda _: object())
+
+
+def test_capability_context_rejects_missing_provider_identity() -> None:
+    with pytest.raises(ValueError, match="agent_id"):
+        CapabilityContext(
+            request_id="req-1",
+            tenant_id="tenant-1",
+            agent_id="",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            channel="web",
+        )
 
 
 def test_snapshot_only_contains_requested_capabilities() -> None:

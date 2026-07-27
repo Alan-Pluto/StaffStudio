@@ -17,8 +17,8 @@ def test_knowledge_request_schema_rejects_unknown_top_level_fields() -> None:
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     valid = {
         "context": {
-            "request_id": "req-1",
-            "tenant_id": "tenant-1",
+            "user_id": "user-1",
+            "agent_id": "agent-1",
             "session_id": "session-1",
             "turn_id": "turn-1",
             "channel": "web",
@@ -30,13 +30,13 @@ def test_knowledge_request_schema_rejects_unknown_top_level_fields() -> None:
     assert list(validator.iter_errors(invalid))
 
 
-def test_knowledge_request_schema_accepts_minimal_provider_context() -> None:
+def test_knowledge_request_schema_requires_minimal_session_turn_context() -> None:
     schema = load_schema("knowledge.search.request.v1.json")
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     valid = {
         "context": {
-            "thread_id": "thread-1",
-            "run_id": "run-1",
+            "session_id": "session-1",
+            "turn_id": "turn-1",
             "user_id": "user-1",
             "agent_id": "agent-1",
             "channel": "web",
@@ -51,6 +51,12 @@ def test_knowledge_request_schema_accepts_minimal_provider_context() -> None:
         },
     }
     assert list(validator.iter_errors(missing_agent))
+
+    with_operation_idempotency = {
+        **valid,
+        "context": {**valid["context"], "idempotency_key": "turn-1:search"},
+    }
+    assert list(validator.iter_errors(with_operation_idempotency))
 
 
 def test_knowledge_result_schema_allows_namespaced_extensions_only() -> None:

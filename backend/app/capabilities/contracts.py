@@ -14,25 +14,50 @@ ExtensionMap: TypeAlias = Mapping[str, JsonObject]
 
 @dataclass(frozen=True)
 class CapabilityContext:
-    """Legacy Core context with stable Provider-boundary aliases."""
+    """Trusted Core invocation context passed through a Provider adapter.
+
+    The session/turn/user/agent/channel fields are the stable Provider business
+    context. Tenant and transport metadata are injected by Core and are not a
+    second public Provider identity model.
+    """
 
     request_id: str
     tenant_id: str
-    agent_id: str | None
-    user_id: str | None
+    agent_id: str
+    user_id: str
     session_id: str
     turn_id: str
     channel: str
     trace_id: str | None = None
     deadline_at: datetime | None = None
     attempt: int = 1
-    idempotency_key: str | None = None
-    run_id: str | None = None
 
-    @property
-    def thread_id(self) -> str:
-        """Provider-facing name for the persisted conversation/session ID."""
-        return self.session_id
+    def __post_init__(self) -> None:
+        required = {
+            "request_id": self.request_id,
+            "tenant_id": self.tenant_id,
+            "agent_id": self.agent_id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "channel": self.channel,
+        }
+        missing = [
+            name
+            for name, value in required.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "CapabilityContext requires non-empty fields: " + ", ".join(missing)
+            )
+        if (
+            not isinstance(self.attempt, int)
+            or isinstance(self.attempt, bool)
+            or self.attempt < 1
+        ):
+            raise ValueError("CapabilityContext attempt must be a positive integer")
+
 
 @dataclass(frozen=True)
 class GeneralSkillResourceRef:

@@ -75,8 +75,15 @@ class CapabilityRegistry:
     def __init__(self) -> None:
         self._bindings: dict[str, CapabilityBinding[Any]] = {}
         self._rehydrators: dict[tuple[str, str], Callable[[DurableCapabilityBinding], Any]] = {}
+        self._sealed = False
+
+    def seal(self) -> None:
+        """Mark startup registration complete; sealed registries cannot mutate."""
+        self._sealed = True
 
     def register(self, binding: CapabilityBinding[Any]) -> None:
+        if self._sealed:
+            raise RuntimeError("capability registry is sealed")
         if (
             not binding.capability
             or not binding.provider_id
@@ -96,6 +103,8 @@ class CapabilityRegistry:
         provider_deployment_id: str,
         rehydrator: Callable[[DurableCapabilityBinding], Any],
     ) -> None:
+        if self._sealed:
+            raise RuntimeError("capability registry is sealed")
         key = (provider_id, provider_deployment_id)
         if key in self._rehydrators:
             raise ValueError(f"rehydrator already registered: {provider_id}/{provider_deployment_id}")

@@ -72,4 +72,5 @@ def build_local_capability_registry(
         LOCAL_KNOWLEDGE_DEPLOYMENT,
         rehydrate,
     )
+    registry.seal()
     return registry

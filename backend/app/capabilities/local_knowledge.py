@@ -108,6 +108,5 @@ class LocalKnowledgeRuntime(KnowledgeRuntime):
                 retryable=False,
                 request_id=context.request_id,
                 provider_id=self.provider_id,
-                extensions={"provider_citation_ref": provider_citation_ref},
             )
         )

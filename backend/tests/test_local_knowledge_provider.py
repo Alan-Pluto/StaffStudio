@@ -51,7 +51,7 @@ def test_local_knowledge_scope_listing_is_tenant_and_agent_scoped(monkeypatch) -
             request_id="req-1",
             tenant_id="tenant-1",
             agent_id="agent-1",
-            user_id=None,
+            user_id="user-1",
             session_id="session-1",
             turn_id="turn-1",
             channel="web",
@@ -69,7 +69,7 @@ def test_local_knowledge_adapter_preserves_service_owned_result() -> None:
             request_id="req-1",
             tenant_id="tenant-1",
             agent_id="agent-1",
-            user_id=None,
+            user_id="user-1",
             session_id="session-1",
             turn_id="turn-1",
             channel="web",
@@ -90,7 +90,7 @@ def test_local_knowledge_adapter_preserves_service_owned_result() -> None:
                 request_id="req-2",
                 tenant_id="tenant-1",
                 agent_id="agent-1",
-                user_id=None,
+                user_id="user-1",
                 session_id="session-1",
                 turn_id="turn-1",
                 channel="web",
@@ -99,6 +99,9 @@ def test_local_knowledge_adapter_preserves_service_owned_result() -> None:
         )
     except CapabilityProviderError as exc:
         assert exc.info.code == "KNOWLEDGE_CITATION_NOT_DURABLE"
+        payload = exc.info.to_payload()
+        assert payload["extensions"] == {}
+        assert "provider_citation_ref" not in str(payload)
     else:  # pragma: no cover - the adapter must never expose an in-memory citation
         raise AssertionError("non-durable citation unexpectedly resolved")
 
@@ -110,8 +113,8 @@ def test_local_knowledge_adapter_rejects_unknown_query_type() -> None:
             CapabilityContext(
                 request_id="req-3",
                 tenant_id="tenant-1",
-                agent_id=None,
-                user_id=None,
+                agent_id="agent-1",
+                user_id="user-1",
                 session_id="session-1",
                 turn_id="turn-1",
                 channel="web",
