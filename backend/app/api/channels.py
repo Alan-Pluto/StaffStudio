@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import threading
+import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -284,6 +286,28 @@ def create_channel_binding(
 
 
 BIND_CODE_TTL_MINUTES = 10
+# bind-code 生成端限速:同一用户每分钟最多 5 次(进程内滑动窗口,重启清零)
+_BIND_CODE_RATE_LIMIT = 5
+_BIND_CODE_RATE_WINDOW_SECONDS = 60.0
+_bind_code_requests: dict[str, list[float]] = {}
+_bind_code_requests_lock = threading.Lock()
+
+
+def _check_bind_code_rate(user_id: str) -> bool:
+    """滑动窗口限速检查并计数;超限返回 False。"""
+    now = time.monotonic()
+    with _bind_code_requests_lock:
+        window = [
+            at
+            for at in _bind_code_requests.get(user_id, [])
+            if now - at < _BIND_CODE_RATE_WINDOW_SECONDS
+        ]
+        if len(window) >= _BIND_CODE_RATE_LIMIT:
+            _bind_code_requests[user_id] = window
+            return False
+        window.append(now)
+        _bind_code_requests[user_id] = window
+        return True
 
 
 def _generate_bind_code() -> str:
@@ -298,6 +322,8 @@ def create_bind_code(
 ) -> ChannelBindCodeRead:
     """为当前用户生成微信身份绑定码(6 位数字,10 分钟有效,旧码作废)。"""
     ensure_current_user_tenant(tenant_id, current_user)
+    if not _check_bind_code_rate(current_user.id):
+        raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
     user_id = current_user.id
     for _attempt in range(10):
         now = utc_now()
@@ -351,6 +377,7 @@ def list_my_identity_bindings(
             external_user_id=row.external_user_id,
             display_name=row.display_name,
             bound_at=row.updated_at.isoformat(),
+            external_account_scope=row.external_account_scope,
         )
         for row in rows
     ]
@@ -360,20 +387,39 @@ def list_my_identity_bindings(
 def delete_my_identity_binding(
     channel: str,
     tenant_id: str = Query(...),
+    external_user_id: str | None = Query(None),
+    external_account_scope: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> Response:
-    """页面侧解除当前用户在指定渠道的身份绑定(效果同 /解绑 指令)。"""
+    """页面侧解除当前用户在指定渠道的身份绑定(效果同 /解绑 指令)。
+
+    传 external_user_id 时只解绑该外部身份:同时传 external_account_scope 按完整
+    身份键精确定位一行;未传 scope 而该外部身份在多 scope(多企业)下均有绑定时
+    返回 400 要求指定 scope,不盲删。未传 external_user_id 时按 channel 全部解绑。
+    """
     ensure_current_user_tenant(tenant_id, current_user)
-    identities = db.exec(
-        select(ChannelIdentity).where(
-            ChannelIdentity.tenant_id == tenant_id,
-            ChannelIdentity.channel == channel,
-            ChannelIdentity.staffdeck_user_id == current_user.id,
-        )
-    ).all()
+    statement = select(ChannelIdentity).where(
+        ChannelIdentity.tenant_id == tenant_id,
+        ChannelIdentity.channel == channel,
+        ChannelIdentity.staffdeck_user_id == current_user.id,
+    )
+    if external_user_id:
+        statement = statement.where(ChannelIdentity.external_user_id == external_user_id)
+        if external_account_scope is not None:
+            statement = statement.where(
+                ChannelIdentity.external_account_scope == external_account_scope
+            )
+    identities = db.exec(statement).all()
     if not identities:
         raise HTTPException(status_code=404, detail="Identity binding not found")
+    if external_user_id and external_account_scope is None:
+        scopes = {identity.external_account_scope for identity in identities}
+        if len(scopes) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="该外部身份在多个企业账号下均有绑定，请指定 external_account_scope 后再解绑",
+            )
     for identity in identities:
         unbind_external_identity(
             db, tenant_id, channel, identity.external_user_id, identity.external_account_scope

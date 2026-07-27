@@ -171,9 +171,11 @@ class RecordingAgentLoop:
 @pytest.fixture(autouse=True)
 def _fake_agent_loop(monkeypatch):
     RecordingAgentLoop.calls = []
+    intake_module._bind_failures.clear()
     monkeypatch.setattr(agent_loop_module, "AgentLoop", RecordingAgentLoop)
     monkeypatch.setattr(intake_module, "_send_wechat_typing", lambda *args, **kwargs: None)
     yield
+    intake_module._bind_failures.clear()
 
 
 # ---------- 指令解析 ----------
@@ -1091,3 +1093,310 @@ def test_wecom_delete_my_identity_binding_moves_data_back() -> None:
         memory = db.get(MemoryRecord, "mem_wecom_bound")
         assert memory.user_id == "user_wecom_lazy"
         assert memory.username == channel_username("tenant_demo", "wecom", "zhangsan", "corpA")
+
+
+# ---------- /绑定 失败限流与生成端限速 ----------
+
+
+def test_bind_failure_throttle_cooldown_and_recovery() -> None:
+    import time as time_mod
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_web_user(engine)
+    _issue_code(engine, code="123456")
+    binding = _load_binding(engine, binding_id)
+
+    # 连续 5 次错码:每次计失败,提示无效
+    for index in range(5):
+        assert (
+            process_inbound(binding, _p2p_message(f"evt_th{index}", "/绑定 999999"), db_engine=engine)
+            is False
+        )
+    notices = _notice_texts(engine)
+    assert notices[-1] == "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
+    assert len(notices) == 5
+
+    # 第 6 次(即使是正确码):冷却期拒绝
+    assert process_inbound(binding, _p2p_message("evt_th5", "/绑定 123456"), db_engine=engine) is False
+    assert _notice_texts(engine)[-1] == "尝试次数过多，请 10 分钟后再试。"
+    with Session(engine) as db:
+        assert db.exec(select(ChannelIdentity)).all() == []
+
+    # 冷却结束后:正确码可用
+    key = ("tenant_demo", "wechat", "", "user_ab12cd34@im.wechat")
+    with intake_module._bind_failures_lock:
+        failures, _since = intake_module._bind_failures[key]
+        intake_module._bind_failures[key] = (failures, time_mod.monotonic() - 601)
+    assert process_inbound(binding, _p2p_message("evt_th6", "/绑定 123456"), db_engine=engine) is False
+    assert "绑定成功" in _notice_texts(engine)[-1]
+
+
+def test_bind_success_resets_failure_count() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_web_user(engine)
+    _issue_code(engine, code="123456")
+    binding = _load_binding(engine, binding_id)
+
+    for index in range(4):
+        process_inbound(binding, _p2p_message(f"evt_rs{index}", "/绑定 000000"), db_engine=engine)
+    assert process_inbound(binding, _p2p_message("evt_rs4", "/绑定 123456"), db_engine=engine) is False
+    assert "绑定成功" in _notice_texts(engine)[-1]
+
+    # 成功清零:再连续错 4 次仍不触发冷却
+    for index in range(4):
+        process_inbound(binding, _p2p_message(f"evt_rx{index}", "/绑定 000000"), db_engine=engine)
+    assert _notice_texts(engine)[-1] != "尝试次数过多，请 10 分钟后再试。"
+    # 第 5 次失败后再来即冷却
+    process_inbound(binding, _p2p_message("evt_rx4", "/绑定 000000"), db_engine=engine)
+    assert process_inbound(binding, _p2p_message("evt_rx5", "/绑定 123456"), db_engine=engine) is False
+    assert _notice_texts(engine)[-1] == "尝试次数过多，请 10 分钟后再试。"
+
+
+def test_bind_failure_throttle_isolated_by_tenant_and_scope() -> None:
+    """其他 tenant/其他 scope 的失败不计入本企业冷却判定。"""
+    for _ in range(intake_module._BIND_FAILURE_LIMIT):
+        intake_module._record_bind_failure("tenant_other", "wecom", "corpX", "zhangsan")
+        intake_module._record_bind_failure("tenant_demo", "wecom", "corpB", "zhangsan")
+    # 本企业(corpA)同 external_user_id 不受牵连
+    assert (
+        intake_module._bind_cooldown_remaining("tenant_demo", "wecom", "corpA", "zhangsan") == 0.0
+    )
+    # 另外两个身份键各自进入冷却
+    assert intake_module._bind_cooldown_remaining("tenant_other", "wecom", "corpX", "zhangsan") > 0
+    assert intake_module._bind_cooldown_remaining("tenant_demo", "wecom", "corpB", "zhangsan") > 0
+
+
+def test_bind_failures_ttl_eviction() -> None:
+    """1 小时无再失败的条目在下一次计数时被淘汰。"""
+    import time as time_mod
+
+    stale_key = ("tenant_demo", "wecom", "corpA", "stale_user")
+    with intake_module._bind_failures_lock:
+        intake_module._bind_failures[stale_key] = (
+            1,
+            time_mod.monotonic() - intake_module._BIND_FAILURE_TTL_SECONDS - 1,
+        )
+    # 记录新失败触发淘汰:过期条目被清,新条目保留
+    intake_module._record_bind_failure("tenant_demo", "wecom", "corpA", "fresh_user")
+    with intake_module._bind_failures_lock:
+        assert stale_key not in intake_module._bind_failures
+        assert ("tenant_demo", "wecom", "corpA", "fresh_user") in intake_module._bind_failures
+
+
+def test_bind_failures_cap_evicts_oldest(monkeypatch) -> None:
+    """超出硬上限时按最后失败时间淘汰最旧条目。"""
+    import time as time_mod
+
+    monkeypatch.setattr(intake_module, "_BIND_FAILURE_MAX_ENTRIES", 3)
+    base = time_mod.monotonic()
+    with intake_module._bind_failures_lock:
+        for index in range(3):
+            intake_module._bind_failures[("tenant_demo", "wecom", "corpA", f"u{index}")] = (
+                1,
+                base - 100 + index,
+            )
+    intake_module._record_bind_failure("tenant_demo", "wecom", "corpA", "u_new")
+    with intake_module._bind_failures_lock:
+        assert len(intake_module._bind_failures) == 3
+        # 最旧的 u0 被淘汰,其余保留
+        assert ("tenant_demo", "wecom", "corpA", "u0") not in intake_module._bind_failures
+        assert ("tenant_demo", "wecom", "corpA", "u_new") in intake_module._bind_failures
+
+
+def test_bind_code_generation_rate_limit_and_window_recovery() -> None:
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    client = _make_api_client(engine)
+    channels_api._bind_code_requests.clear()
+
+    url = "/api/enterprise/channels/bind-code?tenant_id=tenant_demo"
+    for _ in range(5):
+        response = client.post(url, headers=_auth(users["web"]))
+        assert response.status_code == 200
+    # 第 6 次超限 429
+    assert client.post(url, headers=_auth(users["web"])).status_code == 429
+    # 其他用户不受限
+    assert client.post(url, headers=_auth(users["other"])).status_code == 200
+
+    # 窗口恢复:最早请求滑出窗口后可再生成
+    with channels_api._bind_code_requests_lock:
+        channels_api._bind_code_requests[users["web"].id] = [
+            at - 61 for at in channels_api._bind_code_requests[users["web"].id]
+        ]
+    assert client.post(url, headers=_auth(users["web"])).status_code == 200
+
+
+# ---------- scope 字段返回与按行解绑 ----------
+
+
+def test_my_identity_bindings_returns_external_account_scope() -> None:
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wechat",
+                external_account_scope="",
+                external_user_id="wxid_1",
+                staffdeck_user_id=users["web"].id,
+                display_name="张三",
+            )
+        )
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpA",
+                external_user_id="zhangsan",
+                staffdeck_user_id=users["web"].id,
+                display_name="张三",
+            )
+        )
+        db.commit()
+
+    client = _make_api_client(engine)
+    response = client.get(
+        "/api/enterprise/channels/my-identity-bindings?tenant_id=tenant_demo",
+        headers=_auth(users["web"]),
+    )
+    assert response.status_code == 200
+    rows = {row["channel"]: row for row in response.json()}
+    assert rows["wechat"]["external_account_scope"] == ""
+    assert rows["wecom"]["external_account_scope"] == "corpA"
+
+
+def _seed_wecom_bound_identity(engine, user, external_id: str, scope: str) -> None:
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope=scope,
+                external_user_id=external_id,
+                staffdeck_user_id=user.id,
+                display_name=user.display_name,
+            )
+        )
+        db.commit()
+
+
+def test_delete_my_identity_binding_by_external_user_id() -> None:
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    web = users["web"]
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpA")
+    _seed_wecom_bound_identity(engine, web, "lisi", "corpA")
+    with Session(engine) as db:
+        db.add(
+            ChatSession(
+                id="s_zs",
+                tenant_id="tenant_demo",
+                user_id=web.id,
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpA_p2p_zhangsan",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_ls",
+                tenant_id="tenant_demo",
+                user_id=web.id,
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpA_p2p_lisi",
+            )
+        )
+        db.commit()
+
+    client = _make_api_client(engine)
+    deleted = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={"tenant_id": "tenant_demo", "external_user_id": "zhangsan"},
+        headers=_auth(web),
+    )
+    assert deleted.status_code == 204
+
+    with Session(engine) as db:
+        identities = {
+            row.external_user_id: row.staffdeck_user_id
+            for row in db.exec(select(ChannelIdentity)).all()
+        }
+        # 只解绑目标行:zhangsan 回懒建账号,lisi 仍绑在 web 账号
+        assert identities["zhangsan"] != web.id
+        assert identities["lisi"] == web.id
+        assert db.get(ChatSession, "s_zs").user_id != web.id
+        assert db.get(ChatSession, "s_ls").user_id == web.id
+
+
+def test_delete_my_identity_binding_by_external_user_id_404() -> None:
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    _seed_wecom_bound_identity(engine, users["web"], "zhangsan", "corpA")
+
+    client = _make_api_client(engine)
+    missing = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={"tenant_id": "tenant_demo", "external_user_id": "nobody"},
+        headers=_auth(users["web"]),
+    )
+    assert missing.status_code == 404
+    with Session(engine) as db:
+        # 404 不动现有绑定
+        assert db.exec(select(ChannelIdentity)).one().staffdeck_user_id == users["web"].id
+
+
+def test_delete_my_identity_binding_ambiguous_scope_requires_explicit_param() -> None:
+    """同一 external_user_id 在 corpA/corpB 各绑一行:不带 scope 解绑返回 400,不盲删。"""
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    web = users["web"]
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpA")
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpB")
+
+    client = _make_api_client(engine)
+    response = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={"tenant_id": "tenant_demo", "external_user_id": "zhangsan"},
+        headers=_auth(web),
+    )
+    assert response.status_code == 400
+    with Session(engine) as db:
+        rows = db.exec(select(ChannelIdentity)).all()
+        # 两行都保持绑定,未被误删
+        assert len(rows) == 2
+        assert all(row.staffdeck_user_id == web.id for row in rows)
+
+
+def test_delete_my_identity_binding_by_row_with_scope() -> None:
+    """同一 external_user_id 不同 scope 两行:带 scope 只解绑对应行,另一行仍在。"""
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    web = users["web"]
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpA")
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpB")
+
+    client = _make_api_client(engine)
+    deleted = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={
+            "tenant_id": "tenant_demo",
+            "external_user_id": "zhangsan",
+            "external_account_scope": "corpA",
+        },
+        headers=_auth(web),
+    )
+    assert deleted.status_code == 204
+    with Session(engine) as db:
+        rows = {
+            row.external_account_scope: row.staffdeck_user_id
+            for row in db.exec(select(ChannelIdentity)).all()
+        }
+        # corpA 行已解绑(指针回懒建账号),corpB 行仍绑在 web 账号
+        assert rows["corpA"] != web.id
+        assert rows["corpB"] == web.id

@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import timedelta
 
-from sqlalchemy import func, update
+from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -13,16 +13,22 @@ from app.db.models import (
     ChannelBinding,
     ChannelBindingAgent,
     ChannelDelivery,
+    ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
     Message,
+    new_id,
     utc_now,
 )
+from app.channels.service_identity import external_account_scope
 
 logger = logging.getLogger(__name__)
 
 _DELIVERY_BATCH_SIZE = 20
 _REACTION_KINDS = {"reaction_add", "reaction_remove"}
+# 启动重置卡死投递的阈值:仅重置 sending_since 为空或早于此秒数的 sending 行,
+# 阈值内的视为仍被在飞 daemon 持有(避免交错启动重复投递)
+SENDING_STALE_SECONDS = 120
 _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
@@ -258,6 +264,8 @@ def _claim_delivery(
             status="sending",
             attempts=ChannelDelivery.attempts + 1,
             first_attempt_at=func.coalesce(ChannelDelivery.first_attempt_at, now),
+            # 标记领取时刻:_reset_stuck_deliveries 据此区分在飞与卡死(120s 阈值)
+            sending_since=now,
             updated_at=now,
         )
     )
@@ -393,6 +401,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     if invalid_binding:
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
+        delivery.sending_since = None
         delivery.updated_at = utc_now()
         db.add(delivery)
         db.commit()
@@ -446,6 +455,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             delivery.status = "failed"
             delivery.last_error = "渠道会话与绑定账号不一致"
             delivery.next_attempt_at = None
+            delivery.sending_since = None
             delivery.updated_at = utc_now()
             db.add(delivery)
             db.commit()
@@ -519,6 +529,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     delivery.status = "delivered"
     delivery.delivered_at = utc_now()
     delivery.last_error = None
+    delivery.sending_since = None
     delivery.updated_at = utc_now()
     db.add(delivery)
     if binding.channel == "feishu" and delivery.kind not in _REACTION_KINDS:
@@ -598,7 +609,14 @@ def cleanup_feishu_reactions_before_binding_delete(
 
 def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None:
     now = utc_now()
-    statement = select(ChannelDelivery).where(ChannelDelivery.status == "sending")
+    stale_before = now - timedelta(seconds=SENDING_STALE_SECONDS)
+    statement = select(ChannelDelivery).where(
+        ChannelDelivery.status == "sending",
+        or_(
+            ChannelDelivery.sending_since.is_(None),
+            ChannelDelivery.sending_since <= stale_before,
+        ),
+    )
     if reaction_lane:
         statement = statement.where(ChannelDelivery.kind.in_(_REACTION_KINDS))
     else:
@@ -621,6 +639,7 @@ def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None
             db.add(row)
             continue
         row.status = "pending"
+        row.sending_since = None
         row.next_attempt_at = now
         row.updated_at = now
         db.add(row)
@@ -714,3 +733,68 @@ def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
         _delivery_thread = None
         _reaction_delivery_thread = None
     return stopped
+
+
+def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> None:
+    """渠道异常主动告警:给绑定创建者发一条 kind=admin_alert 的渠道消息。
+
+    创建者在该渠道且与本 binding 同 scope(external_account_scope)下已有身份时才
+    投递——多企业身份不跨 scope 发送;优先取其最近私聊会话的 channel_target_json
+    (含有效 context_token);无会话则按身份基本信息构造(微信侧缺 context_token
+    时投递会重试后失败,仅记日志可接受)。任何异常仅记日志。
+    """
+    try:
+        if not binding.created_by_user_id:
+            return
+        scope = external_account_scope(db, binding)
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == binding.tenant_id,
+                ChannelIdentity.channel == binding.channel,
+                ChannelIdentity.external_account_scope == scope,
+                ChannelIdentity.staffdeck_user_id == binding.created_by_user_id,
+            )
+        ).first()
+        if not identity:
+            logger.info(
+                "渠道告警跳过:创建者在该渠道同 scope 下无身份 binding=%s scope=%s",
+                binding.id,
+                scope,
+            )
+            return
+        chat_session = db.exec(
+            select(ChatSession)
+            .where(
+                ChatSession.tenant_id == binding.tenant_id,
+                ChatSession.channel == binding.channel,
+                # 限定本绑定:同一用户多账号时不得拿 A 账号的目标经 B 账号发送
+                ChatSession.channel_binding_id == binding.id,
+                ChatSession.user_id == binding.created_by_user_id,
+                ChatSession.external_conv_id.is_not(None),
+            )
+            .order_by(ChatSession.updated_at.desc())
+            .limit(1)
+        ).first()
+        if chat_session and (chat_session.channel_target_json or {}).get("to_user_id"):
+            target = dict(chat_session.channel_target_json)
+            session_id = chat_session.id
+        else:
+            target = {"to_user_id": identity.external_user_id, "context_token": ""}
+            session_id = f"alert:{identity.id}"
+        db.add(
+            ChannelDelivery(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                session_id=session_id,
+                message_id=None,
+                target_json=target,
+                kind="admin_alert",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=new_id("chalert"),
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("渠道告警投递登记失败 binding=%s", binding.id)
