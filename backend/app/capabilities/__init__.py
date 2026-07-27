@@ -25,6 +25,7 @@ from app.capabilities.contracts import (
 )
 from app.capabilities.errors import CapabilityErrorInfo, CapabilityProviderError
 from app.capabilities.local_knowledge import LocalKnowledgeRuntime
+from app.capabilities.local_registry import build_local_capability_registry
 from app.capabilities.registry import (
     CapabilityBinding,
     CapabilityRegistry,
@@ -58,4 +59,5 @@ __all__ = [
     "SkillArtifact",
     "SkillExecutionEvent",
     "SkillExecutionEventPage",
+    "build_local_capability_registry",
 ]
