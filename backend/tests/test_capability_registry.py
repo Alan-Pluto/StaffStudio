@@ -60,6 +60,18 @@ def test_snapshot_rejects_contracts_outside_consumer_matrix() -> None:
         )
 
 
+def test_rehydrate_uses_saved_deployment_identity_without_reresolving() -> None:
+    registry = CapabilityRegistry()
+    provider = object()
+    binding = CapabilityBinding("knowledge.search", "local", "local-dev", "knowledge.v1", provider)
+    registry.register(binding)
+    snapshot = registry.snapshot({"knowledge.search"})
+    restored = object()
+    registry.register_rehydrator("local", "local-dev", lambda durable: restored)
+
+    assert registry.rehydrate(snapshot.durable_bindings[0]) is restored
+
+
 def test_knowledge_result_has_service_owned_shape_and_extensions() -> None:
     result = KnowledgeSearchResult(
         query_id="q1",

@@ -27,6 +27,7 @@ from app.capabilities.registry import (
     CapabilityBinding,
     CapabilityRegistry,
     CapabilitySnapshot,
+    DurableCapabilityBinding,
 )
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilitySnapshot",
     "CitationDetail",
+    "DurableCapabilityBinding",
     "GeneralSkillCatalog",
     "GeneralSkillExecutionRequest",
     "GeneralSkillExecutor",
