@@ -130,14 +130,13 @@ class SceneSkillSummary:
 
 @dataclass(frozen=True)
 class SceneSkillDefinition:
+    """Versioned snapshot of the existing SOP graph without semantic conversion."""
+
     skill_id: str
     version: str
     definition_hash: str
-    start_step_id: str
-    steps: tuple[Mapping[str, JsonValue], ...]
-    edges: tuple[Mapping[str, JsonValue], ...] = ()
+    content_json: Mapping[str, JsonValue]
     extensions: ExtensionMap = field(default_factory=dict)
-    terminal_node_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

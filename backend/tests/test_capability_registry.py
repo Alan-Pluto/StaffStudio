@@ -111,16 +111,25 @@ def test_knowledge_result_has_service_owned_shape_and_extensions() -> None:
     assert result.extensions["vendor_x"]["rerank_score"] == 0.8
 
 
-def test_scene_definition_exposes_terminal_nodes_without_shifting_legacy_arguments() -> None:
+def test_scene_definition_preserves_existing_content_json_graph() -> None:
+    content_json = {
+        "start_node_id": "collect_amount",
+        "nodes": [
+            {"id": "collect_amount", "type": "input"},
+            {"id": "complete", "type": "terminal"},
+        ],
+        "edges": [{"from": "collect_amount", "to": "complete"}],
+        "terminal_node_ids": ["complete"],
+    }
     definition = SceneSkillDefinition(
-        "expense_approval",
-        "1.0.0",
-        "sha256:definition",
-        "collect_amount",
-        (),
-        (),
-        {"vendor_x": {"revision": 1}},
-        ("complete",),
+        skill_id="expense_approval",
+        version="1.0.0",
+        definition_hash="sha256:definition",
+        content_json=content_json,
+        extensions={"vendor_x": {"revision": 1}},
     )
+
+    assert definition.content_json == content_json
+    assert "nodes" in definition.content_json
+    assert "steps" not in definition.content_json
     assert definition.extensions["vendor_x"]["revision"] == 1
-    assert definition.terminal_node_ids == ("complete",)
