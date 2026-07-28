@@ -3,8 +3,10 @@ import { notify } from '@/components/ui/app-toast';
 
 import { Input } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 import { api, TENANT_ID } from '../../api/client';
+import { InfoCircleOutlined } from '../../icons';
 import type { ChannelBindingRead } from '../../types';
 import { StatusBadge } from '../scheduled-tasks/StatusBadge';
 
@@ -12,6 +14,76 @@ const PRIMARY_BUTTON_CLASS =
   'h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]';
 const OUTLINE_BUTTON_CLASS =
   'h-8 gap-1 rounded-[10px] border-[#e3e7f1] px-5 text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] hover:text-[#18181a]';
+
+const REQUIRED_PERMISSIONS = [
+  '读取用户发给机器人的单聊消息（im:message.p2p_msg:readonly）',
+  '接收群聊中 @ 机器人消息事件（im:message.group_at_msg:readonly）',
+  '以应用的身份发消息（im:message:send_as_bot）',
+  '查看消息表情回复（im:message.reactions:read）',
+  '发送、删除消息表情回复（im:message.reactions:write_only）',
+];
+
+const REMOVABLE_PERMISSIONS = [
+  '任务-创建、更新任务或清单时可指定的人员范围 数据权限范围',
+  '邮箱-用户邮箱管理 数据权限范围',
+  '邮箱-邮件数据 数据权限范围',
+  '飞书人事（企业版）-员工 数据权限范围',
+  '飞书人事（企业版）-待入职人员 数据权限范围',
+  '妙记-妙记基本信息 数据权限范围',
+  '通讯录权限范围 / 获取用户 user ID / 读取群内全部消息的敏感权限',
+];
+
+function FeishuPermissionHint() {
+  return (
+    <div className="rounded-[10px] border border-[#e8edf5] bg-white p-[12px] text-[12px] text-[#464c5e]">
+      <div className="flex items-start gap-[8px]">
+        <div className="mt-[1px] flex h-4 w-4 items-center justify-center text-[#8b93a7]">
+          <TooltipProvider delayDuration={120}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="查看飞书权限说明"
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-[#8b93a7] transition-colors hover:text-[#18181a]"
+                >
+                  <InfoCircleOutlined className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" align="start" className="max-w-[340px]">
+                这个飞书接入只需要机器人消息收发和 reaction 能力；其余权限一般可以不加，尤其是任务、邮箱、人事、妙记和通讯录相关权限。
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <div className="min-w-0 flex-1 leading-[1.6] text-[#596174]">
+          <span className="text-[#18181a]">建议仅保留最小权限集。</span> 下面这些是首版需要的；其余大多可删。
+        </div>
+      </div>
+      <div className="mt-[10px] grid gap-[8px] md:grid-cols-2">
+        <div>
+          <div className="mb-[4px] text-[11px] font-medium text-[#8b93a7]">必需权限</div>
+          <div className="flex flex-wrap gap-[6px]">
+            {REQUIRED_PERMISSIONS.map((item) => (
+              <span key={item} className="rounded-full bg-[#eef4ff] px-[8px] py-[2px] text-[#3f5fb8]">
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-[4px] text-[11px] font-medium text-[#8b93a7]">通常可删除</div>
+          <div className="flex flex-wrap gap-[6px]">
+            {REMOVABLE_PERMISSIONS.map((item) => (
+              <span key={item} className="rounded-full bg-[#f4f6fa] px-[8px] py-[2px] text-[#667085]">
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function FeishuSetup({
   binding,
@@ -85,6 +157,7 @@ export default function FeishuSetup({
 
   return (
     <div className="flex flex-col gap-[12px] rounded-[10px] bg-[#fafbfc] p-[16px]">
+      <FeishuPermissionHint />
       <label className="flex flex-col gap-[6px] text-[12px] text-[#464c5e]">
         App ID
         <Input

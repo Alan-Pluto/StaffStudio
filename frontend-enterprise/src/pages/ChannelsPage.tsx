@@ -81,10 +81,6 @@ const CHANNEL_COMMANDS: Array<{ command: string; description: string }> = [
   { command: '/帮助', description: '查看指令说明' },
 ];
 
-const CAPABILITY_LABEL: Record<string, string> = {
-  typing: '输入状态',
-};
-
 function messageDisplay(
   msg: ChannelConversationMessageRead,
   conversation: ChannelConversationRead,
@@ -658,12 +654,10 @@ export default function ChannelsPage({
                       {item.connected ? '已连接' : isSessionRecovering(item) ? '恢复中' : '未连接'}
                     </span>
                   )}
-                  <span className="ml-auto text-[12px] text-[#858b9c]">
-                    创建者：{item.created_by_name || '-'}
-                  </span>
-                  <span className="text-[12px] text-[#858b9c]">
-                    {formatTime(item.created_at)}
-                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-[10px] text-[12px] text-[#858b9c]">
+                  <span>创建者：{item.created_by_name || '-'}</span>
+                  <span>{formatTime(item.created_at)}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-[6px]">
                   <span className="text-[12px] text-[#858b9c]">可调度员工</span>
@@ -1162,14 +1156,6 @@ export default function ChannelsPage({
                         <span className="text-[13px] font-semibold text-[#18181a]">
                           {meta.name}
                         </span>
-                        {meta.capabilities.map((capability) => (
-                          <span
-                            key={capability}
-                            className="rounded-full bg-[#f2f3f7] px-[8px] py-[2px] text-[10px] text-[#858b9c]"
-                          >
-                            {CAPABILITY_LABEL[capability] || capability}
-                          </span>
-                        ))}
                       </div>
                       <span className="text-[12px] text-[#858b9c]">
                         {getChannelPresentation(meta.channel, meta.name).blurb}
