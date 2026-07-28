@@ -764,6 +764,7 @@ export type ChannelBindingRead = {
   session_expired?: boolean;
   bound_at?: string | null;
   created_by_user_id?: string | null;
+  created_by_name?: string | null;
   config_json?: Record<string, unknown>;
   agents: ChannelBindingAgentRead[];
   auto_route?: boolean;

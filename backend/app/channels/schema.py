@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.db.models import ChannelBinding, ChannelDelivery
+from app.db.models import ChannelBinding, ChannelDelivery, User
 
 
 class ChannelBindingCreate(BaseModel):
@@ -53,6 +53,7 @@ class ChannelBindingRead(BaseModel):
     session_expired: bool = False
     bound_at: Optional[str] = None
     created_by_user_id: Optional[str] = None
+    created_by_name: Optional[str] = None
     agents: list[ChannelBindingAgentRead] = []
     auto_route: bool = True
     created_at: str
@@ -189,6 +190,16 @@ def channel_binding_agents_read(db: Session, binding: ChannelBinding) -> list[Ch
     ]
 
 
+def channel_binding_creator_name(db: Session, binding: ChannelBinding) -> Optional[str]:
+    """创建者展示名;用户已删除或存量绑定无 created_by_user_id 时返回 None。"""
+    if not binding.created_by_user_id:
+        return None
+    user = db.get(User, binding.created_by_user_id)
+    if not user:
+        return None
+    return user.display_name or user.username
+
+
 def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBindingRead:
     config = dict(binding.config_json or {})
     bound_at = config.get("bound_at")
@@ -211,6 +222,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         session_expired=bool(config.get("session_expired")),
         bound_at=str(bound_at) if bound_at else None,
         created_by_user_id=binding.created_by_user_id,
+        created_by_name=channel_binding_creator_name(db, binding),
         agents=channel_binding_agents_read(db, binding),
         auto_route=(binding.config_json or {}).get("auto_route") is not False,
         created_at=binding.created_at.isoformat(),

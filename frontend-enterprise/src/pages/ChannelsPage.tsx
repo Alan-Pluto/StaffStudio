@@ -659,6 +659,9 @@ export default function ChannelsPage({
                     </span>
                   )}
                   <span className="ml-auto text-[12px] text-[#858b9c]">
+                    创建者：{item.created_by_name || '-'}
+                  </span>
+                  <span className="text-[12px] text-[#858b9c]">
                     {formatTime(item.created_at)}
                   </span>
                 </div>
@@ -718,6 +721,9 @@ export default function ChannelsPage({
                 {activeChannel?.identifierLabel}：{botId}
               </span>
             )}
+            <span className="truncate text-[12px] text-[#858b9c]">
+              创建者：{binding.created_by_name || '-'}
+            </span>
           </div>
           <div className="flex items-center gap-[8px]">
             <UIButton

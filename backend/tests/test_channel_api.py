@@ -714,6 +714,49 @@ def test_list_bindings_visibility_scoped_for_non_admin() -> None:
     assert {row["id"] for row in other_list.json()} == {other_id}
 
 
+def test_list_bindings_exposes_creator_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        owner = db.get(User, users["owner"].id)
+        assert owner is not None
+        owner.display_name = "张三"
+        db.add(owner)
+        # 创建者已删除的存量绑定:创建人展示应回退为空而不是报错
+        orphan = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="pending",
+            created_by_user_id="user_deleted",
+        )
+        db.add(orphan)
+        db.commit()
+        orphan_id = orphan.id
+
+    owned_id = _seed_binding(engine)
+    client = _make_client(engine)
+    response = client.get("/api/enterprise/channels?tenant_id=tenant_demo", headers=_auth(users["admin"]))
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()}
+    assert rows[owned_id]["created_by_name"] == "张三"
+    assert rows[orphan_id]["created_by_name"] is None
+
+
+def test_create_binding_returns_creator_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["created_by_user_id"] == users["owner"].id
+    assert response.json()["created_by_name"] == "owner"
+
+
 def test_list_bindings_with_agent_id_unchanged() -> None:
     engine = _test_engine()
     users = _seed_users(engine)
