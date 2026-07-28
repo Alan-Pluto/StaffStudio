@@ -204,6 +204,7 @@ def ensure_open_gallery_binding(
     resource_id: str,
     status: str = "active",
     metadata_json: dict[str, Any] | None = None,
+    revive: bool = False,
 ) -> None:
     overall = get_overall_agent(db, tenant_id)
     if overall:
@@ -215,6 +216,7 @@ def ensure_open_gallery_binding(
             resource_id,
             status,
             metadata_json=open_gallery_metadata(metadata_json),
+            revive=revive,
         )
 
 
@@ -247,6 +249,7 @@ def ensure_private_resource_binding(
     resource_id: str,
     status: str = "active",
     metadata_json: dict[str, Any] | None = None,
+    revive: bool = False,
 ) -> None:
     _ensure_binding(
         db,
@@ -256,6 +259,7 @@ def ensure_private_resource_binding(
         resource_id,
         status,
         metadata_json=_agent_private_metadata_for(db, tenant_id, agent_id, metadata_json),
+        revive=revive,
     )
 
 
@@ -1137,6 +1141,7 @@ def _ensure_binding(
     resource_id: str,
     status: str = "active",
     metadata_json: dict[str, Any] | None = None,
+    revive: bool = False,
 ) -> None:
     existing = db.exec(
         select(AgentResourceBinding).where(
@@ -1147,7 +1152,7 @@ def _ensure_binding(
         )
     ).first()
     if existing:
-        if existing.status == "deleted" and status != "deleted":
+        if existing.status == "deleted" and status != "deleted" and not revive:
             if metadata_json is not None and not existing.metadata_json:
                 existing.metadata_json = metadata_json
                 existing.updated_at = utc_now()

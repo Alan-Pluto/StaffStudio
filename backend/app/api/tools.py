@@ -731,6 +731,10 @@ def delete_mcp_server(
     remove_tools: bool = Query(default=True),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    if agent and not agent.is_overall:
+        # 工具集是租户级资源:员工范围内只解绑该员工可见的同步工具,不动 server 本身
+        return _remove_mcp_server_from_agent(db, tenant_id, agent, server_id)
     require_overall_agent(db, tenant_id, agent_id)
     ensure_open_gallery_admin(tenant_id, current_user)
     row = _get_mcp_server(db, tenant_id, server_id)
@@ -853,6 +857,8 @@ def sync_mcp_tools(
     # 与 create_tool 一致：按当前 agent 范围绑定——员工范围内只对该员工私有可见，
     # 否则落到工具广场（open gallery），所有人可见。已存在的工具也一并补绑定，
     # 避免「先在广场导入，再切到员工同步」时员工侧仍然看不到。
+    # revive=True：同步是显式的「把这个工具集装到当前范围」，应覆盖此前移除留下的墓碑，
+    # 否则移除后无法通过任何界面把工具加回来。
     agent = get_agent(db, row.tenant_id, agent_id)
     creator_metadata = user_creator_metadata(current_user)
     for tool_id in touched_tool_ids:
@@ -865,6 +871,7 @@ def sync_mcp_tools(
                 tool_id,
                 "active",
                 metadata_json=creator_metadata,
+                revive=True,
             )
         else:
             ensure_open_gallery_binding(
@@ -874,6 +881,7 @@ def sync_mcp_tools(
                 tool_id,
                 "active",
                 metadata_json=creator_metadata,
+                revive=True,
             )
 
     db.add(row)
@@ -922,6 +930,28 @@ def _server_tools_by_leaf_name(db: Session, server_id: str) -> dict[str, Tool]:
 
 def _scoped_tool_name(server_name: str, tool_name: str) -> str:
     return f"{server_name}.{tool_name}"
+
+
+def _remove_mcp_server_from_agent(
+    db: Session, tenant_id: str, agent: AgentProfile, server_id: str
+) -> dict[str, str]:
+    _get_mcp_server(db, tenant_id, server_id)
+    tool_ids = db.exec(
+        select(Tool.id).where(Tool.tenant_id == tenant_id, Tool.mcp_server_id == server_id)
+    ).all()
+    hidden = 0
+    for tool_id in tool_ids:
+        binding = _tool_binding(db, tenant_id, agent.id, tool_id)
+        if not binding:
+            continue
+        binding.status = "deleted"
+        binding.updated_at = utc_now()
+        db.add(binding)
+        hidden += 1
+    if not hidden:
+        raise HTTPException(status_code=404, detail="MCP server not visible to this agent")
+    db.commit()
+    return {"status": "hidden"}
 
 
 def _get_mcp_server(db: Session, tenant_id: str, server_id: str) -> MCPServer:

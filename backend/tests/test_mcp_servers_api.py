@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -314,6 +316,109 @@ def test_delete_mcp_server_removes_tools() -> None:
         assert result == {"status": "deleted"}
         assert db.get(MCPServer, server.id) is None
         assert len(db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).all()) == 0
+
+
+def test_delete_mcp_server_in_employee_scope_only_unbinds() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(AgentProfile(id="agent_employee", tenant_id="tenant_demo", name="数字员工", is_overall=False))
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin"),
+            ),
+            db,
+            _admin_user(),
+        )
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            agent_id="agent_employee",
+            current_user=_admin_user(),
+        )
+
+        result = delete_mcp_server(
+            server.id,
+            "tenant_demo",
+            db,
+            agent_id="agent_employee",
+            remove_tools=True,
+            current_user=_admin_user(),
+        )
+
+        assert result == {"status": "hidden"}
+        # 工具集与工具行都是租户级资产,员工范围内的"移除"不得删除它们
+        assert db.get(MCPServer, server.id) is not None
+        assert len(db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).all()) == 1
+        assert list_tools(tenant_id="tenant_demo", bucket=None, agent_id="agent_employee", db=db) == []
+
+
+def test_resync_restores_tools_removed_from_employee() -> None:
+    """移除是可逆的:再次同步必须把工具装回来,否则私有同步的工具会永久失联。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(AgentProfile(id="agent_employee", tenant_id="tenant_demo", name="数字员工", is_overall=False))
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin"),
+            ),
+            db,
+            _admin_user(),
+        )
+        sync_request = MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"])
+        sync_mcp_tools(server.id, sync_request, db, agent_id="agent_employee", current_user=_admin_user())
+        delete_mcp_server(
+            server.id,
+            "tenant_demo",
+            db,
+            agent_id="agent_employee",
+            remove_tools=True,
+            current_user=_admin_user(),
+        )
+        assert list_tools(tenant_id="tenant_demo", bucket=None, agent_id="agent_employee", db=db) == []
+
+        sync_mcp_tools(server.id, sync_request, db, agent_id="agent_employee", current_user=_admin_user())
+
+        restored = list_tools(tenant_id="tenant_demo", bucket=None, agent_id="agent_employee", db=db)
+        assert [item.name for item in restored] == ["builtin_demo.echo"]
+
+
+def test_delete_mcp_server_in_employee_scope_without_tools_returns_404() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_employee", tenant_id="tenant_demo", name="数字员工", is_overall=False))
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin"),
+            ),
+            db,
+            _admin_user(),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            delete_mcp_server(
+                server.id,
+                "tenant_demo",
+                db,
+                agent_id="agent_employee",
+                remove_tools=True,
+                current_user=_admin_user(),
+            )
+        assert exc.value.status_code == 404
 
 
 def _mock_mcp_server_path() -> Path:

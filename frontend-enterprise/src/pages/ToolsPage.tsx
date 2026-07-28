@@ -243,6 +243,22 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
     [visibleRows, bucketStats],
   );
 
+  // 工具集是租户级的,员工范围内只展示该员工已导入其工具的服务器,数量也按员工可见口径算
+  const agentServerToolCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      if (!row.mcp_server_id) continue;
+      counts.set(row.mcp_server_id, (counts.get(row.mcp_server_id) || 0) + 1);
+    }
+    return counts;
+  }, [rows]);
+  const visibleServers = useMemo(
+    () => (isOverallAgent ? servers : servers.filter((row) => agentServerToolCounts.has(row.id))),
+    [agentServerToolCounts, isOverallAgent, servers],
+  );
+  const serverToolCount = (row: MCPServerRead) =>
+    isOverallAgent ? row.tool_count : agentServerToolCounts.get(row.id) || 0;
+
   async function confirmDelete() {
     const row = deleteTarget;
     if (!row) return;
@@ -286,11 +302,11 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       await api.delete(
         `/api/enterprise/mcp-servers/${row.id}?tenant_id=${TENANT_ID}${agentQuery}&remove_tools=true`,
       );
-      notify.success('已删除');
+      notify.success(isOverallAgent ? '已删除' : '已从当前员工移除');
       setServerDeleteTarget(null);
       void load();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '删除失败');
+      notify.error(error instanceof Error ? error.message : isOverallAgent ? '删除失败' : '移除失败');
     } finally {
       setDeletingServer(false);
     }
@@ -554,7 +570,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       key: 'tool_count',
       title: '工具数',
       width: 110,
-      render: (row) => <span className="text-[#858b9c]">{row.tool_count} 个工具</span>,
+      render: (row) => <span className="text-[#858b9c]">{serverToolCount(row)} 个工具</span>,
     },
     {
       key: 'enabled',
@@ -581,14 +597,14 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
             <IconRefresh className="size-[14px] shrink-0" />
             发现/同步
           </UIButton>
-          {canManageCurrentScope && isOverallAgent && (
+          {canManageCurrentScope && (
             <UIButton
               variant="outline"
               size="sm"
               onClick={() => setServerDeleteTarget(row)}
               className={cn(RETURN_BUTTON_CLASS, 'text-[#e5484d] hover:text-[#e5484d]')}
             >
-              删除
+              {isOverallAgent ? '删除' : '移除'}
             </UIButton>
           )}
         </div>
@@ -675,7 +691,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
           <StatCard label="分桶" value={stats.buckets} className="basis-[220px]" />
         </div>
 
-        {servers.length > 0 && (
+        {visibleServers.length > 0 && (
           <div className="flex flex-col gap-[18px]">
             <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
               <ApiOutlined className="size-[14px] shrink-0" />
@@ -685,14 +701,14 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
               <DataTable
                 aria-label="MCP 服务器列表"
                 columns={serverColumns}
-                data={servers}
+                data={visibleServers}
                 rowKey={(row) => row.id}
                 loading={loading}
                 emptyText="暂无 MCP 服务器"
               />
             </div>
             <div className="grid gap-[10px] md:hidden">
-              {servers.map((row) => (
+              {visibleServers.map((row) => (
                 <article className={MOBILE_CARD_CLASS} key={row.id}>
                   <div className="flex min-w-0 items-start justify-between gap-[10px]">
                     <div className="min-w-0">
@@ -708,7 +724,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
                   <div className="mt-[8px] flex flex-wrap items-center gap-[6px]">
                     <StatusBadge tone="gray">{transportLabel(row.connection.transport)}</StatusBadge>
                     <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
-                    <StatusBadge tone="gray">{row.tool_count} 个工具</StatusBadge>
+                    <StatusBadge tone="gray">{serverToolCount(row)} 个工具</StatusBadge>
                   </div>
                   <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">
                     {serverEndpoint(row.connection)}
@@ -723,14 +739,14 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
                       <IconRefresh className="size-[14px] shrink-0" />
                       发现/同步
                     </UIButton>
-                    {isOverallAgent && (
+                    {canManageCurrentScope && (
                       <UIButton
                         variant="outline"
                         size="sm"
                         onClick={() => setServerDeleteTarget(row)}
                         className={cn(RETURN_BUTTON_CLASS, 'text-[#e5484d] hover:text-[#e5484d]')}
                       >
-                        删除
+                        {isOverallAgent ? '删除' : '移除'}
                       </UIButton>
                     )}
                   </div>
@@ -877,9 +893,17 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
           if (!open) setServerDeleteTarget(null);
         }}
         loading={deletingServer}
-        title={serverDeleteTarget ? `删除 MCP 服务器「${serverDeleteTarget.display_name || serverDeleteTarget.name}」？` : ''}
-        description={`其下 ${serverDeleteTarget?.tool_count ?? 0} 个已导入工具将一并删除，操作不可撤销。`}
-        confirmText="删除"
+        title={
+          serverDeleteTarget
+            ? `${isOverallAgent ? '删除' : '移除'} MCP 服务器「${serverDeleteTarget.display_name || serverDeleteTarget.name}」？`
+            : ''
+        }
+        description={
+          isOverallAgent
+            ? `其下 ${serverDeleteTarget ? serverToolCount(serverDeleteTarget) : 0} 个已导入工具将一并删除，操作不可撤销。`
+            : `将从当前员工移除该工具集的 ${serverDeleteTarget ? serverToolCount(serverDeleteTarget) : 0} 个工具，工具集本身和其他员工不受影响。`
+        }
+        confirmText={isOverallAgent ? '删除' : '移除'}
         onConfirm={() => void confirmDeleteServer()}
       />
     </div>
