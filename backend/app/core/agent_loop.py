@@ -4997,7 +4997,13 @@ class AgentLoop:
             catalog_binding_id=catalog.provider_id,
         )
         package = catalog.get_package(context, resource_ref)
-        if package is None:
+        if package is None or (
+            package.package_id != resource_ref.package_id
+            or package.version != resource_ref.version
+            or package.digest != resource_ref.digest
+            or package.package_contract_version
+            != resource_ref.package_contract_version
+        ):
             raise AgentLoopPreconditionError(
                 "general_skill_content_unavailable",
                 "通用技能内容不可用或运行前已发生变化，请重试。",

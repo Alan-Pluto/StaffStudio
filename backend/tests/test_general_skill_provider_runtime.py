@@ -1,4 +1,4 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -6,7 +6,7 @@ from app.capabilities.local_general_skill import (
     GeneralSkillRuntimeSnapshot,
     package_from_row,
 )
-from app.core.agent_loop import AgentLoop
+from app.core.agent_loop import AgentLoop, AgentLoopPreconditionError
 from app.db.models import ChatSession, GeneralSkill
 from app.session.session_schema import ChatTurnRequest
 
@@ -98,3 +98,42 @@ def test_provider_package_pin_rejects_content_drift() -> None:
     second = package_from_row(skill)
 
     assert first.digest != second.digest
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("package_id", "genskill_other"),
+        ("version", "other-version"),
+        ("digest", "sha256:other"),
+        ("package_contract_version", "other-contract"),
+    ],
+)
+def test_agent_loop_rejects_provider_package_that_does_not_match_pin(
+    field: str,
+    value: str,
+) -> None:
+    skill = _skill()
+    package = replace(package_from_row(skill), **{field: value})
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.general_skill_catalog = RecordingCatalog(package)
+    session = ChatSession(
+        id="session_01",
+        tenant_id="tenant_demo",
+        user_id="user_01",
+        agent_id="agent_01",
+    )
+    request = ChatTurnRequest(
+        tenant_id="tenant_demo",
+        session_id=session.id,
+        user_id=session.user_id,
+        agent_id=session.agent_id,
+        client_turn_id="turn_01",
+        channel="web",
+        message="北京天气",
+    )
+
+    with pytest.raises(AgentLoopPreconditionError) as exc_info:
+        loop._general_skill_runtime_snapshot(request, session, skill)
+
+    assert exc_info.value.code == "general_skill_content_unavailable"
