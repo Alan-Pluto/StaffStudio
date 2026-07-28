@@ -27,6 +27,7 @@ import { canManageEmployeeAgent, employeeDisplayName } from '../employee';
 import { getDateLocale } from '@/i18n';
 import { getClientTimeZone, parseBackendDateTime } from '@/lib/timezone';
 import { cn } from '@/lib/utils';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import type {
   AgentProfileRead,
   ChannelBindingRead,
@@ -436,7 +437,7 @@ export default function ChannelsPage({
   async function copyBindCommand() {
     if (!bindCode) return;
     try {
-      await navigator.clipboard.writeText(`/绑定 ${bindCode.code}`);
+      await copyTextToClipboard(`/绑定 ${bindCode.code}`);
       notify.success('已复制');
     } catch {
       notify.error('复制失败');
