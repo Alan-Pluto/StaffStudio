@@ -1121,10 +1121,13 @@ def discover_mcp_tools(
     request: MCPDiscoverRequest,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    agent_id: str | None = None,
 ) -> MCPDiscoverResponse:
-    """已保存 Server：拉取 tools/list，并标注哪些已导入为 Tool。"""
+    """已保存 Server：拉取 tools/list，并按当前员工范围标注已导入工具。"""
     row = _get_mcp_server(db, request.tenant_id, server_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
+    if agent_id and get_agent(db, request.tenant_id, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     connection = request.connection or _server_connection(row)
     response = _discover_response(
         connection,
@@ -1137,14 +1140,27 @@ def discover_mcp_tools(
         db.add(row)
         db.commit()
         existing = _server_tools_by_leaf_name(db, server_id)
+        visible_tool_ids = {
+            tool.id
+            for tool in visible_tool_rows(
+                db,
+                request.tenant_id,
+                agent_id,
+                include_inactive=True,
+            )
+        }
         for tool in response.tools:
             match = existing.get(tool.name)
-            if match is not None:
+            if match is not None and match.id in visible_tool_ids:
                 tool.imported = True
                 tool.tool_id = match.id
                 tool.enabled = match.enabled
                 tool.capability_scope = normalize_capability_scope(match.capability_scope)
             else:
+                # 同一 MCP 子工具可能已导入广场或其他员工，但尚未绑定到当前员工。
+                # 对当前范围仍应显示为“未导入”，这样同步操作会复用现有 Tool 行并补齐绑定。
+                tool.imported = False
+                tool.tool_id = None
                 tool.capability_scope = normalize_capability_scope(row.capability_scope)
     return response
 
