@@ -123,6 +123,26 @@ describe('chat history consumer contract', () => {
     );
   });
 
+  it('renders safe Markdown images and keeps unsafe image targets as text', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: [
+          '![趋势图](https://images.example.com/chart.png)',
+          '',
+          '![危险图片](javascript:alert(1))',
+        ].join('\n'),
+      }),
+    );
+
+    expect(rendered).toContain('src="https://images.example.com/chart.png"');
+    expect(rendered).toContain('alt="趋势图"');
+    expect(rendered).toContain('referrerPolicy="no-referrer"');
+    expect(rendered).toContain('aria-label="查看图片：趋势图"');
+    expect(rendered).toContain('危险图片');
+    expect(rendered).not.toContain('危险图片)');
+    expect(rendered).not.toContain('src="javascript:');
+  });
+
   it('keeps only inline citations, deduplicates content, and orders labels', () => {
     const item = message({
       metadata: {

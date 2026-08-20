@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
 import { ApiError } from '@/api/client';
@@ -18,6 +18,8 @@ import type {
 
 import {
   CHAT_MARKDOWN_CLASS,
+  CHAT_MARKDOWN_IMAGE_CLASS,
+  CHAT_MARKDOWN_IMAGE_LINK_CLASS,
   CHAT_MD_TABLE_CLASS,
   CHAT_MD_TABLE_SCROLL_CLASS,
 } from './chatPageStyles';
@@ -196,13 +198,41 @@ function safeExternalHttpUrl(value: string): string | null {
   }
 }
 
+function ExternalMarkdownImage({ alt, src }: { alt: string; src: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <span title={src}>{alt}</span>;
+  }
+
+  return (
+    <a
+      className={CHAT_MARKDOWN_IMAGE_LINK_CLASS}
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`查看图片：${alt}`}
+    >
+      <img
+        className={CHAT_MARKDOWN_IMAGE_CLASS}
+        src={src}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  );
+}
+
 export function renderInlineMarkdown(
   text: string,
   keyPrefix: string,
   options: MarkdownRenderOptions = {},
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
+  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))+\))/g;
   let cursor = 0;
   let index = 0;
   let match: RegExpExecArray | null;
@@ -218,14 +248,22 @@ export function renderInlineMarkdown(
     } else if (token.startsWith('**') && token.endsWith('**')) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key, options)}</strong>);
     } else {
-      const image = token.match(/^!\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const image = token.match(/^!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (image) {
-        nodes.push(<span key={key}>{image[1] || '图片'}</span>);
+        const alt = image[1].trim() || '图片';
+        const src = safeExternalHttpUrl(image[2].trim());
+        if (src) {
+          nodes.push(
+            <ExternalMarkdownImage key={key} src={src} alt={alt} />,
+          );
+        } else {
+          nodes.push(<span key={key}>{alt}</span>);
+        }
         cursor = match.index + token.length;
         index += 1;
         continue;
       }
-      const link = token.match(/^\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const link = token.match(/^\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (link) {
         const href = link[2].trim();
         const label = link[1] || href;
