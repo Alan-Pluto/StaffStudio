@@ -65,24 +65,91 @@ class HarnessTaskAgent:
         image_payloads: list[ValidatedTaskImagePayload] | None = None,
         step_deadline_monotonic: float | None = None,
         step_timeout_seconds: int | None = None,
+        checkpoint: dict[str, Any] | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
-        transcript: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
-        evidence_results: list[dict[str, Any]] = []
-        capability_results: list[dict[str, Any]] = []
-        satisfied_required_knowledge_ids: set[str] = set()
-        successful_knowledge_searches = 0
-        artifacts: list[dict[str, Any]] = []
-        loaded_general_skill_names: list[str] = []
-        non_retryable_action_signatures: set[str] = set()
+        checkpoint = dict(checkpoint or {})
+        current_step_id = _requirement_step_id(requirement)
+        same_frame = (
+            str(checkpoint.get("task_frame_id") or "") == requirement.task_frame_id
+        )
+        same_step = (
+            same_frame
+            and str(checkpoint.get("step_id") or "") == current_step_id
+        )
+        transcript = _dict_items(checkpoint.get("transcript")) if same_frame else []
+        citations = _dict_items(checkpoint.get("citations")) if same_frame else []
+        evidence_results = (
+            _dict_items(checkpoint.get("evidence_results")) if same_frame else []
+        )
+        capability_results = (
+            _dict_items(checkpoint.get("capability_results")) if same_step else []
+        )
+        satisfied_required_knowledge_ids = set(
+            _string_list(checkpoint.get("satisfied_required_knowledge_ids"))
+            if same_step
+            else []
+        )
+        successful_knowledge_searches = (
+            int(checkpoint.get("successful_knowledge_searches") or 0)
+            if same_step
+            else 0
+        )
+        artifacts = _dict_items(checkpoint.get("artifacts")) if same_frame else []
+        loaded_general_skill_names = (
+            _string_list(checkpoint.get("loaded_general_skill_names"))
+            if same_frame
+            else []
+        )
+        recent_task_summaries = _string_list(
+            checkpoint.get("recent_task_summaries")
+        )[-8:]
+        non_retryable_action_signatures = set(
+            _string_list(checkpoint.get("non_retryable_action_signatures"))
+            if same_step
+            else []
+        )
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+        def finish(result: TaskExecutionResult) -> TaskExecutionResult:
+            summary = " ".join(
+                str(result.task_summary or result.reply_fragment or "").split()
+            ).strip()
+            if (
+                result.status != "action_budget"
+                and summary
+                and (
+                    not recent_task_summaries
+                    or recent_task_summaries[-1] != summary
+                )
+            ):
+                recent_task_summaries.append(summary[:1_000])
+            result.loop_checkpoint = {
+                "version": 1,
+                "task_frame_id": requirement.task_frame_id,
+                "step_id": current_step_id,
+                "transcript": transcript[-40:],
+                "citations": citations[-20:],
+                "evidence_results": evidence_results[-10:],
+                "capability_results": capability_results[-20:],
+                "satisfied_required_knowledge_ids": sorted(
+                    satisfied_required_knowledge_ids
+                ),
+                "successful_knowledge_searches": successful_knowledge_searches,
+                "artifacts": artifacts[-20:],
+                "loaded_general_skill_names": loaded_general_skill_names[-20:],
+                "recent_task_summaries": recent_task_summaries[-8:],
+                "non_retryable_action_signatures": sorted(
+                    non_retryable_action_signatures
+                )[-20:],
+            }
+            return result
 
         for iteration in range(1, max_actions + 1):
             _raise_if_cancelled(is_cancelled)
             if _deadline_expired(step_deadline_monotonic):
-                return _step_timeout_result(
+                return finish(_step_timeout_result(
                     requirement,
                     action_count=iteration - 1,
                     timeout_seconds=step_timeout_seconds,
@@ -91,7 +158,7 @@ class HarnessTaskAgent:
                     evidence_results=evidence_results,
                     artifacts=artifacts,
                     trace_sink=trace_sink,
-                )
+                ))
             requirement_payload = requirement.model_dump(mode="json")
             attachment_descriptors, attachment_context = isolated_attachment_context(
                 requirement.attachments,
@@ -113,6 +180,10 @@ class HarnessTaskAgent:
                     ),
                 },
             }
+            if recent_task_summaries:
+                payload["agent_loop_memory"] = {
+                    "recent_task_summaries": list(recent_task_summaries),
+                }
             if attachment_context is not None:
                 payload["conversation_context"] = attachment_context
             try:
@@ -151,7 +222,7 @@ class HarnessTaskAgent:
                         )
             except (ValidationError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
-                    return _step_timeout_result(
+                    return finish(_step_timeout_result(
                         requirement,
                         action_count=iteration - 1,
                         timeout_seconds=step_timeout_seconds,
@@ -160,7 +231,7 @@ class HarnessTaskAgent:
                         evidence_results=evidence_results,
                         artifacts=artifacts,
                         trace_sink=trace_sink,
-                    )
+                    ))
                 if trace_sink:
                     trace_sink(
                         "harness_action_failed",
@@ -169,7 +240,7 @@ class HarnessTaskAgent:
                             "error": str(exc),
                         },
                     )
-                return TaskExecutionResult(
+                return finish(TaskExecutionResult(
                     task_frame_id=requirement.task_frame_id,
                     status="failed",
                     reply_fragment="当前任务的执行模型没有返回有效动作。",
@@ -177,10 +248,10 @@ class HarnessTaskAgent:
                     capability_results=capability_results,
                     action_count=iteration,
                     error={"code": "HARNESS_ACTION_INVALID", "message": str(exc)},
-                )
+                ))
             _raise_if_cancelled(is_cancelled)
             if _deadline_expired(step_deadline_monotonic):
-                return _step_timeout_result(
+                return finish(_step_timeout_result(
                     requirement,
                     action_count=iteration,
                     timeout_seconds=step_timeout_seconds,
@@ -189,7 +260,7 @@ class HarnessTaskAgent:
                     evidence_results=evidence_results,
                     artifacts=artifacts,
                     trace_sink=trace_sink,
-                )
+                ))
 
             if trace_sink:
                 trace_sink(
@@ -240,7 +311,7 @@ class HarnessTaskAgent:
                             },
                         )
                     continue
-                return _finish_result(
+                return finish(_finish_result(
                     requirement,
                     action,
                     citations,
@@ -248,7 +319,7 @@ class HarnessTaskAgent:
                     capability_results,
                     artifacts,
                     action_count=iteration,
-                )
+                ))
 
             tool_name = str(action.tool_name or "").strip()
             if not tool_name or tool_name not in allowed_names:
@@ -303,7 +374,7 @@ class HarnessTaskAgent:
                                 },
                             },
                         )
-                    return TaskExecutionResult(
+                    return finish(TaskExecutionResult(
                         task_frame_id=requirement.task_frame_id,
                         status="failed",
                         reply_fragment="相同的不可重试工具调用被阻止。",
@@ -317,7 +388,7 @@ class HarnessTaskAgent:
                             "code": "NON_RETRYABLE_ACTION_REPEATED",
                             "message": "相同工具与参数已失败且不可重试。",
                         },
-                    )
+                    ))
                 try:
                     _raise_if_cancelled(is_cancelled)
                     result = invoke_tool(tool_name, dict(action.arguments or {}))
@@ -355,7 +426,7 @@ class HarnessTaskAgent:
             if tool_name not in {"capability_search", "capability_describe"}:
                 capability_results.append(bounded_result)
             if _deadline_expired(step_deadline_monotonic):
-                return _step_timeout_result(
+                return finish(_step_timeout_result(
                     requirement,
                     action_count=iteration,
                     timeout_seconds=step_timeout_seconds,
@@ -364,7 +435,7 @@ class HarnessTaskAgent:
                     evidence_results=evidence_results,
                     artifacts=artifacts,
                     trace_sink=trace_sink,
-                )
+                ))
             activated_names = _activate_described_capabilities(
                 requirement,
                 tool_name,
@@ -404,7 +475,7 @@ class HarnessTaskAgent:
                         ),
                     },
                 )
-        return TaskExecutionResult(
+        return finish(TaskExecutionResult(
             task_frame_id=requirement.task_frame_id,
             status="action_budget",
             reply_fragment="当前任务已达到本轮自动执行上限，需要下一轮继续。",
@@ -415,7 +486,24 @@ class HarnessTaskAgent:
             task_summary="Harness 达到 action budget。",
             action_count=max_actions,
             error={"code": "ACTION_BUDGET_EXHAUSTED"},
-        )
+        ))
+
+
+def _requirement_step_id(requirement: TaskRequirement) -> str:
+    step = requirement.sop_context.get("step")
+    if not isinstance(step, dict):
+        return ""
+    for key in ("step_id", "node_id", "id"):
+        value = str(step.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _dict_items(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _activate_described_capabilities(

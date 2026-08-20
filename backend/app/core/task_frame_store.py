@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.db.models import (
     ChatSession,
+    HarnessAgentLoopRecord,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     new_id,
@@ -33,6 +34,102 @@ class TaskFrameClaimConflict(RuntimeError):
 class TaskFrameStore:
     def __init__(self, db: Session):
         self.db = db
+
+    def ensure_agent_loop(
+        self,
+        row: HarnessTaskFrameRecord,
+    ) -> HarnessAgentLoopRecord:
+        """Return the durable logical loop that owns this TaskFrame."""
+
+        loop = self.db.get(HarnessAgentLoopRecord, row.agent_loop_id) if row.agent_loop_id else None
+        loop_key = f"sop:{row.id}" if row.kind == "sop" else f"general:{row.session_id}"
+        if loop is None:
+            loop = self.db.exec(
+                select(HarnessAgentLoopRecord).where(
+                    HarnessAgentLoopRecord.session_id == row.session_id,
+                    HarnessAgentLoopRecord.loop_key == loop_key,
+                )
+            ).first()
+        if loop is None:
+            loop = HarnessAgentLoopRecord(
+                tenant_id=row.tenant_id,
+                session_id=row.session_id,
+                loop_key=loop_key,
+                kind="sop" if row.kind == "sop" else "general",
+                status="active",
+                owner_task_frame_record_id=row.id,
+                skill_id=row.skill_id,
+                workspace_scope_id=row.id,
+            )
+            self.db.add(loop)
+            self.db.flush()
+        else:
+            loop.owner_task_frame_record_id = row.id
+            loop.skill_id = row.skill_id
+            loop.status = "active"
+            loop.finished_at = None
+            loop.updated_at = utc_now()
+            loop.state_version = max(1, int(loop.state_version or 0) + 1)
+            self.db.add(loop)
+        if row.agent_loop_id != loop.id:
+            row.agent_loop_id = loop.id
+            row.updated_at = utc_now()
+            self.db.add(row)
+            self.db.flush()
+        return loop
+
+    def save_agent_loop_checkpoint(
+        self,
+        loop: HarnessAgentLoopRecord,
+        checkpoint: dict[str, Any],
+        *,
+        status: str | None = None,
+        last_run_id: str | None = None,
+    ) -> None:
+        loop.checkpoint_json = dict(checkpoint)
+        if status is not None:
+            loop.status = status
+        if last_run_id is not None:
+            loop.last_run_id = last_run_id
+        loop.updated_at = utc_now()
+        loop.state_version = max(1, int(loop.state_version or 0) + 1)
+        if loop.status in {"completed", "failed", "cancelled"}:
+            loop.finished_at = utc_now()
+        else:
+            loop.finished_at = None
+        self.db.add(loop)
+
+    def finish_agent_loop_for_frame(
+        self,
+        row: HarnessTaskFrameRecord,
+        *,
+        result_status: str,
+        checkpoint: dict[str, Any],
+        last_run_id: str | None,
+    ) -> None:
+        if not row.agent_loop_id:
+            return
+        loop = self.db.get(HarnessAgentLoopRecord, row.agent_loop_id)
+        if loop is None:
+            return
+        if result_status == "awaiting_user":
+            loop_status = "suspended"
+        elif row.kind != "sop":
+            loop_status = "active"
+        elif result_status == "completed":
+            loop_status = "completed"
+        elif result_status == "cancelled":
+            loop_status = "cancelled"
+        elif result_status == "failed":
+            loop_status = "failed"
+        else:
+            loop_status = "active"
+        self.save_agent_loop_checkpoint(
+            loop,
+            checkpoint,
+            status=loop_status,
+            last_run_id=last_run_id,
+        )
 
     def persist_plan(
         self,
@@ -344,6 +441,7 @@ class TaskFrameStore:
             tenant_id=row.tenant_id,
             session_id=row.session_id,
             task_frame_record_id=row.id,
+            agent_loop_id=row.agent_loop_id,
             task_id=row.task_id,
             source_turn_id=row.source_turn_id,
             status="running",
@@ -356,6 +454,20 @@ class TaskFrameStore:
         self.db.add(run)
         self.db.flush()
         return run
+
+    def update_run_context(
+        self,
+        run: HarnessRunRecord,
+        *,
+        requirement: dict[str, Any],
+        capability_snapshot: dict[str, Any],
+    ) -> None:
+        """Refresh the current-node projection without creating another run."""
+
+        run.task_requirement_json = dict(requirement)
+        run.capability_snapshot_json = dict(capability_snapshot)
+        run.updated_at = utc_now()
+        self.db.add(run)
 
     def finish_run(
         self,
@@ -519,10 +631,25 @@ class TaskFrameStore:
                     "task_summary": "用户取消了当前 Harness 执行。",
                 },
             )
+            self.finish_agent_loop_for_frame(
+                row,
+                result_status="cancelled",
+                checkpoint=self.agent_loop_checkpoint(row),
+                last_run_id=None,
+            )
         if self.active_task_frame_id(session) in cancelled_task_ids:
             self.set_active_task_frame(session, None)
         self.project_session(session)
         return list(rows)
+
+    def agent_loop_checkpoint(
+        self,
+        row: HarnessTaskFrameRecord,
+    ) -> dict[str, Any]:
+        if not row.agent_loop_id:
+            return {}
+        loop = self.db.get(HarnessAgentLoopRecord, row.agent_loop_id)
+        return dict(loop.checkpoint_json or {}) if loop is not None else {}
 
     def dependencies_satisfied(
         self,

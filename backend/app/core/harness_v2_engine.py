@@ -683,6 +683,8 @@ class HarnessV2Engine:
         max_actions: int,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
+        agent_loop = self.store.ensure_agent_loop(row)
+        loop_checkpoint = dict(agent_loop.checkpoint_json or {})
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
@@ -711,12 +713,15 @@ class HarnessV2Engine:
                 "step_id": row.step_id,
                 "step_timeout_seconds": step_timeout_seconds,
                 "harness_max_actions": max_actions,
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_kind": agent_loop.kind,
                 "execution_engine": "harness_v2",
             },
         )
         remaining_actions = max_actions
         results: list[TaskExecutionResult] = []
         last_step_result = StepAgentResult()
+        run: HarnessRunRecord | None = None
 
         while remaining_actions > 0:
             self._raise_if_cancelled(request, session)
@@ -771,13 +776,26 @@ class HarnessV2Engine:
                 lease_owner=self.active_frame_lease_owner,
                 attempt_no=self.active_frame_attempt_no,
             )
-            run = self.store.start_run(
-                row,
-                requirement=requirement.model_dump(mode="json"),
-                capability_snapshot=manifest.model_dump(mode="json"),
-                lease_owner=self.active_frame_lease_owner,
-                attempt_no=self.active_frame_attempt_no,
-            )
+            if run is None:
+                run = self.store.start_run(
+                    row,
+                    requirement=requirement.model_dump(mode="json"),
+                    capability_snapshot=manifest.model_dump(mode="json"),
+                    lease_owner=self.active_frame_lease_owner,
+                    attempt_no=self.active_frame_attempt_no,
+                )
+                self.store.save_agent_loop_checkpoint(
+                    agent_loop,
+                    loop_checkpoint,
+                    status="active",
+                    last_run_id=run.id,
+                )
+            else:
+                self.store.update_run_context(
+                    run,
+                    requirement=requirement.model_dump(mode="json"),
+                    capability_snapshot=manifest.model_dump(mode="json"),
+                )
             self.active_run_id = run.id
             self.db.commit()
 
@@ -790,6 +808,7 @@ class HarnessV2Engine:
                         **payload,
                         "task_frame_id": row.task_id,
                         "harness_run_id": run.id,
+                        "agent_loop_id": agent_loop.id,
                         "execution_engine": "harness_v2",
                     },
                 )
@@ -830,8 +849,17 @@ class HarnessV2Engine:
                 image_payloads=image_payloads,
                 step_deadline_monotonic=step_deadline_monotonic,
                 step_timeout_seconds=step_timeout_seconds,
+                checkpoint=loop_checkpoint,
             )
+            loop_checkpoint = dict(result.loop_checkpoint or {})
             _merge_discovered_artifacts(result, invoker.discover_artifacts())
+            loop_checkpoint["artifacts"] = list(result.artifacts)
+            self.store.save_agent_loop_checkpoint(
+                agent_loop,
+                loop_checkpoint,
+                status="active",
+                last_run_id=run.id,
+            )
             results.append(result)
             remaining_actions -= max(1, result.action_count)
 
@@ -856,15 +884,6 @@ class HarnessV2Engine:
                     )
                 else:
                     last_step_result = _step_result(result)
-                self.store.finish_run(
-                    run,
-                    status=result.status,
-                    action_count=result.action_count,
-                    result=result.model_dump(mode="json"),
-                    lease_owner=self.active_frame_lease_owner,
-                    attempt_no=self.active_frame_attempt_no,
-                )
-                self.active_run_id = None
                 break
 
             result = _enforce_required_slots(result, requirement, session)
@@ -933,19 +952,20 @@ class HarnessV2Engine:
                 continue_frame = False
             else:
                 frame.target_step_id = session.active_step_id
-            self.store.finish_run(
-                run,
-                status=result.status,
-                action_count=result.action_count,
-                result=result.model_dump(mode="json"),
-                lease_owner=self.active_frame_lease_owner,
-                attempt_no=self.active_frame_attempt_no,
-            )
-            self.active_run_id = None
             if not continue_frame:
                 break
 
         combined = _combine_results(row.task_id, results)
+        if run is not None:
+            self.store.finish_run(
+                run,
+                status=combined.status,
+                action_count=combined.action_count,
+                result=combined.model_dump(mode="json"),
+                lease_owner=self.active_frame_lease_owner,
+                attempt_no=self.active_frame_attempt_no,
+            )
+            self.active_run_id = None
         row_status = combined.status
         if row_status == "action_budget":
             row_status = "queued"
@@ -958,6 +978,12 @@ class HarnessV2Engine:
             lease_owner=self.active_frame_lease_owner,
             attempt_no=self.active_frame_attempt_no,
         )
+        self.store.finish_agent_loop_for_frame(
+            row,
+            result_status=combined.status,
+            checkpoint=loop_checkpoint,
+            last_run_id=run.id if run is not None else None,
+        )
         self.events.record(
             request.tenant_id,
             session.id,
@@ -968,6 +994,8 @@ class HarnessV2Engine:
                 "step_id": row.step_id,
                 "action_count": combined.action_count,
                 "error": combined.error,
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_status": agent_loop.status,
                 "execution_engine": "harness_v2",
             },
         )
@@ -1012,6 +1040,12 @@ class HarnessV2Engine:
                             "status": "cancelled",
                             "task_summary": "用户取消了当前 Harness 执行。",
                         },
+                    )
+                    self.store.finish_agent_loop_for_frame(
+                        row,
+                        result_status="cancelled",
+                        checkpoint=self.store.agent_loop_checkpoint(row),
+                        last_run_id=self.active_run_id,
                     )
         self.db.commit()
         turn_store = getattr(self, "turn_store", None)
@@ -1080,6 +1114,12 @@ class HarnessV2Engine:
                         "error": {"code": code, "message": message},
                         "task_summary": "Harness 执行中断，TaskFrame 已重新排队。",
                     },
+                )
+                self.store.finish_agent_loop_for_frame(
+                    row,
+                    result_status="action_budget",
+                    checkpoint=self.store.agent_loop_checkpoint(row),
+                    last_run_id=self.active_run_id,
                 )
         self.db.commit()
         turn_store = getattr(self, "turn_store", None)

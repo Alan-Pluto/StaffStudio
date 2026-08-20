@@ -58,6 +58,7 @@ from app.db.models import (
     AgentProfile,
     ChatSession,
     GeneralSkill,
+    HarnessAgentLoopRecord,
     HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
@@ -3511,6 +3512,178 @@ def test_task_frame_store_persists_frames_and_projects_only_active_sop_work() ->
                 "target_skill_id": "legacy-skill",
             }
         ]
+
+
+def test_agent_loop_identity_is_durable_per_general_session_and_sop_frame() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        session = _chat_session()
+        general_one = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-one",
+            task_id="general-one",
+            kind="conversation",
+        )
+        general_two = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-two",
+            task_id="general-two",
+            kind="conversation",
+        )
+        sop_one = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-one",
+            task_id="sop-one",
+            kind="sop",
+            skill_id="purchase",
+        )
+        sop_two = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-two",
+            task_id="sop-two",
+            kind="sop",
+            skill_id="refund",
+        )
+        db.add_all([session, general_one, general_two, sop_one, sop_two])
+        db.commit()
+        store = TaskFrameStore(db)
+
+        general_loop_one = store.ensure_agent_loop(general_one)
+        general_loop_two = store.ensure_agent_loop(general_two)
+        sop_loop_one = store.ensure_agent_loop(sop_one)
+        sop_loop_two = store.ensure_agent_loop(sop_two)
+        db.commit()
+
+        assert general_loop_one.id == general_loop_two.id
+        assert sop_loop_one.id != sop_loop_two.id
+        assert sop_loop_one.id != general_loop_one.id
+        assert db.exec(select(HarnessAgentLoopRecord)).all()
+
+        sop_one.status = "queued"
+        db.add(sop_one)
+        db.commit()
+        store.mark_running(sop_one)
+        run = store.start_run(
+            sop_one,
+            requirement={"goal": "购买"},
+            capability_snapshot={"available": []},
+        )
+        store.update_run_context(
+            run,
+            requirement={"goal": "继续购买", "step_id": "confirm"},
+            capability_snapshot={"available": [{"name": "confirm_order"}]},
+        )
+        db.commit()
+        assert run.agent_loop_id == sop_loop_one.id
+        assert run.task_requirement_json["step_id"] == "confirm"
+        assert len(db.exec(select(HarnessRunRecord)).all()) == 1
+
+        store.finish_agent_loop_for_frame(
+            sop_one,
+            result_status="awaiting_user",
+            checkpoint={"task_frame_id": sop_one.task_id},
+            last_run_id=run.id,
+        )
+        db.commit()
+        db.refresh(sop_loop_one)
+        assert sop_loop_one.status == "suspended"
+
+        store.finish_agent_loop_for_frame(
+            sop_one,
+            result_status="completed",
+            checkpoint={"task_frame_id": sop_one.task_id},
+            last_run_id=run.id,
+        )
+        db.commit()
+        db.refresh(sop_loop_one)
+        assert sop_loop_one.status == "completed"
+
+
+def test_harness_agent_checkpoint_restores_transcript_across_activation(
+    monkeypatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "read_file",
+                "arguments": {"path": "result.json"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "已完成",
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "新任务已完成",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(payload)
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-checkpoint",
+        kind="conversation",
+        goal="读取结果",
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="harness.read_file",
+                    name="read_file",
+                    kind="internal",
+                )
+            ]
+        ),
+    )
+    agent = HarnessTaskAgent()
+    first = agent.run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: {"success": True, "data": {"value": 1}},
+        max_actions=1,
+    )
+    second = agent.run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=1,
+        checkpoint=first.loop_checkpoint,
+    )
+    next_requirement = requirement.model_copy(
+        update={"task_frame_id": "task-checkpoint-next", "goal": "新任务"}
+    )
+    third = agent.run(
+        next_requirement,
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=1,
+        checkpoint=second.loop_checkpoint,
+    )
+
+    assert first.status == "action_budget"
+    assert second.status == "completed"
+    assert third.status == "completed"
+    assert len(payloads[1]["harness_transcript"]) == 2
+    assert payloads[1]["harness_transcript"][1]["tool_name"] == "read_file"
+    assert payloads[2]["harness_transcript"] == []
+    assert payloads[2]["agent_loop_memory"]["recent_task_summaries"] == ["已完成"]
 
 
 def test_turn_action_budget_defers_unstarted_frames_as_queued() -> None:

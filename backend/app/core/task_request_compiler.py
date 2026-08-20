@@ -92,6 +92,7 @@ class TaskExecutionResult(BaseModel):
     action_count: int = 0
     error: dict[str, Any] | None = None
     structured_result: Any | None = None
+    loop_checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class TaskRequestCompiler:

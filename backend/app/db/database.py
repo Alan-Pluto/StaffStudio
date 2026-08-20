@@ -1810,6 +1810,9 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             column["name"] for column in inspector.get_columns("harness_task_frames")
         }
         task_frame_column_sql = {
+            "agent_loop_id": (
+                "ALTER TABLE harness_task_frames ADD COLUMN agent_loop_id VARCHAR"
+            ),
             "decision": (
                 "ALTER TABLE harness_task_frames ADD COLUMN decision "
                 "VARCHAR NOT NULL DEFAULT 'answer_only'"
@@ -1858,12 +1861,19 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
                 "ON harness_task_frames(lease_expires_at)"
             )
         )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_task_frames_agent_loop_id "
+                "ON harness_task_frames(agent_loop_id)"
+            )
+        )
 
     if "harness_runs" in tables:
         run_columns = {
             column["name"] for column in inspector.get_columns("harness_runs")
         }
         run_column_sql = {
+            "agent_loop_id": "ALTER TABLE harness_runs ADD COLUMN agent_loop_id VARCHAR",
             "attempt_no": (
                 "ALTER TABLE harness_runs ADD COLUMN attempt_no "
                 "INTEGER NOT NULL DEFAULT 1"
@@ -1892,6 +1902,12 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_harness_runs_lease_expires_at "
                 "ON harness_runs(lease_expires_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_runs_agent_loop_id "
+                "ON harness_runs(agent_loop_id)"
             )
         )
 
