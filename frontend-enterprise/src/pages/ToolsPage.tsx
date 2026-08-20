@@ -1598,8 +1598,9 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
     if (!built) return;
     setDiscovering(true);
     try {
+      const agentQuery = currentAgentQuery();
       const response = server
-        ? await api.post<MCPDiscoverResponse>(`/api/enterprise/mcp-servers/${server.id}/discover`, {
+        ? await api.post<MCPDiscoverResponse>(`/api/enterprise/mcp-servers/${server.id}/discover${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, {
             tenant_id: TENANT_ID,
             connection: built.connection,
             apps_mode: values.apps_mode,
