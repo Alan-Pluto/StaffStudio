@@ -14,6 +14,7 @@ import {
   messageAttachments,
   renderInlineMarkdown,
   scheduledDraftForMessage,
+  shouldDeferPersistedEventToLiveStream,
 } from './chatHelpers';
 
 function message(patch: Partial<ChatMessage> = {}): ChatMessage {
@@ -251,6 +252,14 @@ describe('chat history consumer contract', () => {
       'stream_end',
       'stream_interrupted',
     ]);
+  });
+
+  it('replays persisted assistant and terminal events even when an old live stream owns the turn', () => {
+    expect(shouldDeferPersistedEventToLiveStream('stream_delta', true)).toBe(true);
+    expect(shouldDeferPersistedEventToLiveStream('assistant_message_created', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('stream_end', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('complete', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('stream_delta', false)).toBe(false);
   });
 
   it('turns the Harness lifecycle into mergeable execution-record lines', () => {

@@ -923,6 +923,15 @@ export function isTerminalSessionEvent(
   return isTerminalStreamEvent(event);
 }
 
+export function shouldDeferPersistedEventToLiveStream(
+  eventName: string,
+  liveStreamOwnsTurn: boolean,
+): boolean {
+  if (!liveStreamOwnsTurn) return false;
+  if (eventName === 'assistant_message_created') return false;
+  return !STREAM_TERMINAL_EVENTS.has(eventName);
+}
+
 export function attachTurnIdsToServerMessages(
   serverMessages: ChatMessage[],
   realtimeMessages: ChatMessage[],
