@@ -330,4 +330,36 @@ describe('chat history consumer contract', () => {
       state: 'completed',
     });
   });
+
+  it('keeps a switched SOP visible while it waits for user input', () => {
+    const started = harnessEventTraceLine('task_frame_started', {
+      task_frame_id: 'task-purchase',
+      kind: 'sop',
+      skill_id: 'skill_purchase_001',
+      skill_name: '购买商品流程',
+      step_id: 'collect_user_name',
+    });
+    const finished = harnessEventTraceLine('task_frame_finished', {
+      task_frame_id: 'task-purchase',
+      kind: 'sop',
+      skill_id: 'skill_purchase_001',
+      skill_name: '购买商品流程',
+      step_id: 'collect_user_name',
+      status: 'awaiting_user',
+      action_count: 1,
+    });
+
+    expect(started).toMatchObject({
+      id: 'harness_frame_task-purchase',
+      text: '开始SOP 购买商品流程',
+      state: 'running',
+    });
+    expect(finished).toMatchObject({
+      id: 'harness_frame_task-purchase',
+      kind: 'skill',
+      text: '等待用户补充 购买商品流程',
+      detail: '状态 awaiting_user · 步骤 collect_user_name · 执行 1 个动作',
+      state: 'running',
+    });
+  });
 });

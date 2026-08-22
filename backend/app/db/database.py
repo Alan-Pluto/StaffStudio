@@ -1652,6 +1652,7 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
     nodes = content.get("nodes")
     steps = content.get("steps")
     if isinstance(nodes, list) and nodes:
+        _ensure_required_capability_refs(nodes)
         content.pop("steps", None)
         content.setdefault("start_node_id", _first_node_id(nodes))
         content.setdefault("terminal_node_ids", [_last_node_id(nodes)] if _last_node_id(nodes) else [])
@@ -1680,6 +1681,31 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
         ]
     content.pop("steps", None)
     return content
+
+
+def _ensure_required_capability_refs(nodes: list[object]) -> None:
+    """Repair legacy nodes where a required capability was not also selected."""
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        refs = node.get("capability_refs")
+        if not isinstance(refs, dict):
+            continue
+        for required_field, selected_field in (
+            ("required_general_skill_ids", "general_skill_ids"),
+            ("required_tool_ids", "tool_ids"),
+            ("required_knowledge_base_ids", "knowledge_base_ids"),
+        ):
+            required = refs.get(required_field)
+            if not isinstance(required, list):
+                continue
+            selected = refs.get(selected_field)
+            selected_values = list(selected) if isinstance(selected, list) else []
+            for capability_id in required:
+                if capability_id not in selected_values:
+                    selected_values.append(capability_id)
+            refs[selected_field] = selected_values
 
 
 def _step_to_node_dict(step: dict[str, object]) -> dict[str, object]:

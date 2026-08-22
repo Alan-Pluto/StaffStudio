@@ -1460,11 +1460,14 @@ export function harnessEventTraceLine(
 
   if (eventName === 'task_frame_started') {
     const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
+    const skillName = typeof data.skill_name === 'string' && data.skill_name.trim()
+      ? data.skill_name.trim()
+      : (typeof data.skill_id === 'string' ? data.skill_id.trim() : '');
     const stepId = typeof data.step_id === 'string' ? data.step_id.trim() : '';
     return {
       id: `harness_frame_${frameId}`,
       kind: kind === 'sop' ? 'skill' : 'decision',
-      text: '开始执行任务',
+      text: kind === 'sop' && skillName ? `开始SOP ${skillName}` : '开始执行任务',
       detail: [
         kind === 'sop' ? 'SOP TaskFrame' : '对话 TaskFrame',
         stepId ? `步骤 ${stepId}` : '',
@@ -1497,17 +1500,33 @@ export function harnessEventTraceLine(
     };
   }
   if (eventName === 'task_frame_finished') {
+    const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
+    const skillName = typeof data.skill_name === 'string' && data.skill_name.trim()
+      ? data.skill_name.trim()
+      : (typeof data.skill_id === 'string' ? data.skill_id.trim() : '');
+    const stepId = typeof data.step_id === 'string' ? data.step_id.trim() : '';
     const status = typeof data.status === 'string' ? data.status : 'completed';
     const failed = ['failed', 'blocked', 'cancelled'].includes(status);
     const actionCount = typeof data.action_count === 'number' ? data.action_count : undefined;
+    const text = kind === 'sop' && skillName
+      ? (failed
+        ? `SOP执行失败 ${skillName}`
+        : (status === 'awaiting_user'
+          ? `等待用户补充 ${skillName}`
+          : `SOP任务执行完成 ${skillName}`))
+      : (failed ? '任务执行失败' : '任务执行完成');
     return {
       id: `harness_frame_${frameId}`,
-      kind: 'decision',
-      text: failed ? '任务执行失败' : '任务执行完成',
-      detail: [`状态 ${status}`, actionCount === undefined ? '' : `执行 ${actionCount} 个动作`]
+      kind: kind === 'sop' ? 'skill' : 'decision',
+      text,
+      detail: [
+        `状态 ${status}`,
+        stepId ? `步骤 ${stepId}` : '',
+        actionCount === undefined ? '' : `执行 ${actionCount} 个动作`,
+      ]
         .filter(Boolean)
         .join(' · '),
-      state: failed ? 'failed' : 'completed',
+      state: failed ? 'failed' : (status === 'awaiting_user' ? 'running' : 'completed'),
       icon: failed ? 'loading' : 'execute',
     };
   }

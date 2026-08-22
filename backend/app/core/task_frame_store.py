@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from app.db.models import (
     ChatSession,
     HarnessAgentLoopRecord,
+    HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     new_id,
@@ -805,6 +806,70 @@ class TaskFrameStore:
             )
         return projected
 
+    def referenced_session_results(
+        self,
+        row: HarnessTaskFrameRecord,
+        *,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Resolve durable prior capability results referenced by this frame's slots.
+
+        A later TaskFrame may refer to an identifier produced by an earlier, unrelated
+        frame (for example an order, document, ticket, or job id). Those frames do not
+        have a planner dependency edge, but the model still needs the authoritative
+        result behind the identifier instead of passing the opaque id to an unrelated
+        lookup tool. Matching is exact, session-scoped, and only considers completed
+        invocations, so no conversational history or sibling task is leaked.
+        """
+
+        reference_values = _reference_scalar_values(row.slots_json or {})
+        if not reference_values:
+            return []
+        invocations = self.db.exec(
+            select(HarnessInvocationRecord)
+            .where(
+                HarnessInvocationRecord.tenant_id == row.tenant_id,
+                HarnessInvocationRecord.session_id == row.session_id,
+                HarnessInvocationRecord.task_id != row.task_id,
+                HarnessInvocationRecord.status == "completed",
+            )
+            .order_by(HarnessInvocationRecord.finished_at.desc())
+            .limit(80)
+        ).all()
+        projected: list[dict[str, Any]] = []
+        for invocation in invocations:
+            result = (
+                dict(invocation.response_cache_json or {})
+                if isinstance(invocation.response_cache_json, dict)
+                else {}
+            )
+            matches = sorted(reference_values.intersection(_all_scalar_values(result)))
+            if not matches:
+                continue
+            projected.append(
+                {
+                    "task_frame_id": invocation.task_id,
+                    "status": "completed",
+                    "task_summary": (
+                        f"此前能力 {invocation.tool_name} 的结果与当前任务引用匹配。"
+                    ),
+                    "slot_updates": {},
+                    "capability_results": [
+                        {
+                            "tool_name": invocation.tool_name,
+                            "arguments": dict(invocation.arguments_json or {}),
+                            "result": result,
+                        }
+                    ],
+                    "artifacts": [],
+                    "reference_matches": matches,
+                    "reference_source": "session_invocation",
+                }
+            )
+            if len(projected) >= max(1, int(limit)):
+                break
+        return projected
+
     def project_session(self, session: ChatSession) -> None:
         rows = self.db.exec(
             select(HarnessTaskFrameRecord)
@@ -1050,3 +1115,30 @@ def _legacy_projection(row: HarnessTaskFrameRecord) -> dict[str, Any]:
         "updated_at": row.updated_at.isoformat(),
         "created_at": row.created_at.isoformat(),
     }
+
+
+def _reference_scalar_values(value: Any) -> set[str]:
+    """Return reference-like slot values without matching ordinary short entities."""
+
+    return {
+        item
+        for item in _all_scalar_values(value)
+        if len(item) >= 6
+    }
+
+
+def _all_scalar_values(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        collected: set[str] = set()
+        for item in value.values():
+            collected.update(_all_scalar_values(item))
+        return collected
+    if isinstance(value, list):
+        collected = set()
+        for item in value:
+            collected.update(_all_scalar_values(item))
+        return collected
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        normalized = str(value).strip()
+        return {normalized} if normalized else set()
+    return set()

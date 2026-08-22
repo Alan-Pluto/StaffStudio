@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Callable
@@ -129,7 +130,7 @@ class HarnessTaskAgent:
                 "version": 1,
                 "task_frame_id": requirement.task_frame_id,
                 "step_id": current_step_id,
-                "transcript": transcript[-40:],
+                "transcript": _transcript_for_model(transcript),
                 "citations": citations[-20:],
                 "evidence_results": evidence_results[-10:],
                 "capability_results": capability_results[-20:],
@@ -167,7 +168,7 @@ class HarnessTaskAgent:
             requirement_payload["attachments"] = attachment_descriptors
             payload = {
                 "task_requirement": requirement_payload,
-                "harness_transcript": transcript,
+                "harness_transcript": _transcript_for_model(transcript),
                 "iteration": iteration,
                 "remaining_actions": max_actions - iteration + 1,
                 "knowledge_search_budget": {
@@ -187,39 +188,82 @@ class HarnessTaskAgent:
             if attachment_context is not None:
                 payload["conversation_context"] = attachment_context
             try:
-                # Persist a stable link between this LLM span and the Harness
-                # iteration that consumes it.  Timing projections must not
-                # infer this relationship from overlapping wall-clock windows.
-                with llm_operation(
-                    "harness.task_action",
-                    task_frame_id=requirement.task_frame_id,
-                    iteration=iteration,
-                ):
-                    raw = _deadline_llm_client(
-                        model_config,
-                        step_deadline_monotonic,
-                    ).generate_json(
-                        system_prompt,
-                        payload,
-                    )
-                try:
-                    action = HarnessAction.model_validate(raw)
-                except ValidationError:
-                    action = _adapt_general_skill_structured_result(
-                        raw,
-                        loaded_general_skill_names=loaded_general_skill_names,
-                    )
-                    if action is None:
-                        raise
-                    if trace_sink:
-                        trace_sink(
-                            "harness_structured_result_adapted",
-                            {
-                                "iteration": iteration,
-                                "source": loaded_general_skill_names[-1],
-                                "result_type": type(raw).__name__,
-                            },
+                action: HarnessAction | None = None
+                validation_error: ValidationError | None = None
+                for protocol_attempt in range(2):
+                    # Persist a stable link between this LLM span and the Harness
+                    # iteration that consumes it.  Timing projections must not
+                    # infer this relationship from overlapping wall-clock windows.
+                    with llm_operation(
+                        "harness.task_action",
+                        task_frame_id=requirement.task_frame_id,
+                        iteration=iteration,
+                        protocol_attempt=protocol_attempt + 1,
+                    ):
+                        raw = _deadline_llm_client(
+                            model_config,
+                            step_deadline_monotonic,
+                        ).generate_json(
+                            system_prompt,
+                            payload,
                         )
+                    try:
+                        action = HarnessAction.model_validate(raw)
+                    except ValidationError as exc:
+                        action = _adapt_general_skill_structured_result(
+                            raw,
+                            loaded_general_skill_names=loaded_general_skill_names,
+                        )
+                        if action is not None:
+                            if trace_sink:
+                                trace_sink(
+                                    "harness_structured_result_adapted",
+                                    {
+                                        "iteration": iteration,
+                                        "source": loaded_general_skill_names[-1],
+                                        "result_type": type(raw).__name__,
+                                    },
+                                )
+                            break
+                        validation_error = exc
+                        if protocol_attempt == 0:
+                            payload = {
+                                **payload,
+                                "protocol_repair": {
+                                    "message": (
+                                        "上一次输出不符合 HarnessAction Schema。请只修正动作"
+                                        "协议，不要改变任务意图。"
+                                    ),
+                                    "invalid_output": raw,
+                                    "validation_error": str(exc),
+                                    "required_tool_envelope": {
+                                        "action": "tool",
+                                        "tool_name": (
+                                            "capability_manifest 中的已授权能力名称"
+                                        ),
+                                        "arguments": {},
+                                    },
+                                    "required_finish_envelope": {
+                                        "action": "finish",
+                                        "status": "completed | awaiting_user | handoff | failed",
+                                    },
+                                },
+                            }
+                            if trace_sink:
+                                trace_sink(
+                                    "harness_action_repair_requested",
+                                    {
+                                        "iteration": iteration,
+                                        "error": str(exc),
+                                    },
+                                )
+                            continue
+                        raise
+                    break
+                if action is None:
+                    if validation_error is not None:
+                        raise validation_error
+                    raise RuntimeError("Harness action generation returned no action.")
             except (ValidationError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
                     return finish(_step_timeout_result(
@@ -647,12 +691,6 @@ def _finish_result(
     status = action.status or "completed"
     step = requirement.sop_context.get("step") if requirement.sop_context else None
     step_type = str(step.get("type") or "").strip() if isinstance(step, dict) else ""
-    allowed_actions = step.get("allowed_actions") if isinstance(step, dict) else None
-    is_handoff_node = step_type == "handoff" or (
-        isinstance(allowed_actions, list) and "handoff_human" in allowed_actions
-    )
-    if is_handoff_node and status == "completed":
-        status = "handoff"
     allowed_next_steps = {
         str(item.get("next_node_id") or "").strip()
         for item in requirement.allowed_transitions
@@ -661,6 +699,12 @@ def _finish_result(
     next_step_id = str(action.next_step_id or "").strip() or None
     if next_step_id and next_step_id not in allowed_next_steps:
         next_step_id = None
+    # Merely allowing the optional handoff_human action must not turn an otherwise
+    # successful SOP step into a handoff. Even a dedicated handoff node may have a
+    # valid non-handoff transition chosen by the model; only a terminal handoff node
+    # with no selected successor is coerced to the handoff status.
+    if step_type == "handoff" and status == "completed" and next_step_id is None:
+        status = "handoff"
     return TaskExecutionResult(
         task_frame_id=requirement.task_frame_id,
         status=status,
@@ -784,6 +828,123 @@ def _bounded_capability_result(
     if isinstance(result.get("mcp_app"), dict):
         truncated["mcp_app"] = result["mcp_app"]
     return truncated
+
+
+def _transcript_for_model(
+    transcript: list[dict[str, Any]],
+    *,
+    keep_recent_entries: int = 6,
+) -> list[dict[str, Any]]:
+    """Project persistent tool history into a bounded execution context.
+
+    Tool results stay in the durable invocation/trace records.  The model only
+    needs the newest interactions plus stable receipts for older operations.
+    GeneralSkill package instructions are retained because they define the
+    workflow the current AgentLoop is following.
+    """
+
+    cutoff = max(0, len(transcript) - keep_recent_entries)
+    latest_skill_instruction_index: dict[str, int] = {}
+    for index, entry in enumerate(transcript):
+        if _is_general_skill_instruction_entry(entry):
+            latest_skill_instruction_index[str(entry.get("tool_name") or "")] = index
+
+    projected: list[tuple[int, dict[str, Any]]] = []
+    for index, entry in enumerate(transcript):
+        copied = dict(entry)
+        skill_name = str(copied.get("tool_name") or "")
+        is_latest_skill_instruction = (
+            _is_general_skill_instruction_entry(copied)
+            and latest_skill_instruction_index.get(skill_name) == index
+        )
+        if _is_general_skill_instruction_entry(copied) and not is_latest_skill_instruction:
+            continue
+        if (
+            copied.get("role") == "assistant"
+            and skill_name.startswith("general_skill.")
+            and latest_skill_instruction_index.get(skill_name) != index + 1
+        ):
+            continue
+        if index >= cutoff or is_latest_skill_instruction:
+            projected.append((index, copied))
+            continue
+        if copied.get("role") == "tool" and isinstance(copied.get("result"), dict):
+            result = dict(copied["result"])
+            receipt: dict[str, Any] = {
+                key: result.get(key)
+                for key in ("tool_name", "success", "error", "truncated")
+                if key in result
+            }
+            data = result.get("data")
+            if isinstance(data, dict):
+                receipt["data"] = {
+                    key: data.get(key)
+                    for key in (
+                        "path",
+                        "source_path",
+                        "destination_path",
+                        "sha256",
+                        "size",
+                        "offset",
+                        "next_offset",
+                        "continuation_token",
+                        "eof",
+                        "status",
+                        "exit_code",
+                    )
+                    if data.get(key) is not None
+                }
+            receipt["history_receipt"] = _history_receipt(result)
+            copied["result"] = receipt
+        elif copied.get("role") == "assistant":
+            arguments = copied.get("arguments")
+            if isinstance(arguments, dict):
+                copied["arguments"] = _compact_old_arguments(arguments)
+        projected.append((index, copied))
+
+    if len(projected) <= 40:
+        return [entry for _index, entry in projected]
+
+    # A long-lived non-SOP AgentLoop may exceed the transcript entry cap. Keep
+    # the latest loaded instruction for every Skill, then spend the remaining
+    # budget on the newest ordinary interactions.
+    essential_indexes = {
+        index
+        for index, entry in projected
+        if _is_general_skill_instruction_entry(entry)
+    }
+    remaining = max(0, 40 - len(essential_indexes))
+    ordinary_indexes = [
+        index for index, _entry in projected if index not in essential_indexes
+    ][-remaining:]
+    selected_indexes = essential_indexes | set(ordinary_indexes)
+    return [
+        entry for index, entry in projected if index in selected_indexes
+    ]
+
+
+def _is_general_skill_instruction_entry(entry: dict[str, Any]) -> bool:
+    if entry.get("role") != "tool" or not str(entry.get("tool_name") or "").startswith(
+        "general_skill."
+    ):
+        return False
+    result = entry.get("result")
+    return isinstance(result, dict) and bool(result.get("success"))
+
+
+def _history_receipt(value: Any) -> dict[str, Any]:
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return {
+        "omitted_chars": len(serialized),
+        "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+    }
+
+
+def _compact_old_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    serialized = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
+    if len(serialized) <= 1_000:
+        return dict(arguments)
+    return {"history_receipt": _history_receipt(arguments)}
 
 
 def _string_list(value: object) -> list[str]:
