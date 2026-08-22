@@ -2956,7 +2956,18 @@ def test_harness_agent_blocks_repeated_non_retryable_action(
         "tool_name": "exec_command",
         "arguments": {"command": "sleep 1 &"},
     }
-    actions = iter([repeated_action, repeated_action])
+    actions = iter(
+        [
+            repeated_action,
+            repeated_action,
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "已停止重复执行并说明限制。",
+                "task_summary": "重复的不可重试动作未再次执行。",
+            },
+        ]
+    )
 
     class FakeLLMClient:
         def __init__(self, _model_config: ModelConfig):
@@ -2999,15 +3010,80 @@ def test_harness_agent_blocks_repeated_non_retryable_action(
         max_actions=3,
     )
 
-    assert result.status == "failed"
-    assert result.error is not None
-    assert result.error["code"] == "NON_RETRYABLE_ACTION_REPEATED"
+    assert result.status == "completed"
+    assert result.error is None
     assert invoked == [
         (
             "exec_command",
             {"command": "sleep 1 &"},
         )
     ]
+
+
+def test_harness_agent_does_not_restore_non_retryable_failures_from_checkpoint(
+    monkeypatch,
+) -> None:
+    action = {
+        "action": "tool",
+        "tool_name": "read_file",
+        "arguments": {"path": "results/current.json"},
+    }
+    actions = iter(
+        [
+            action,
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "读取完成。",
+                "task_summary": "已在新一轮重新读取。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-restored-command-retry",
+            kind="conversation",
+            goal="读取更新后的结果",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="harness.read-file",
+                        name="read_file",
+                        kind="internal",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        lambda name, arguments: (
+            invoked.append((name, arguments))
+            or {"success": True, "data": {"content": "updated"}}
+        ),
+        max_actions=2,
+        checkpoint={
+            "task_frame_id": "task-restored-command-retry",
+            "step_id": "",
+            "non_retryable_action_signatures": [
+                harness_agent_module._action_signature(
+                    "read_file", {"path": "results/current.json"}
+                )
+            ],
+        },
+    )
+
+    assert result.status == "completed"
+    assert invoked == [("read_file", {"path": "results/current.json"})]
 
 
 def test_harness_agent_activates_described_capability_for_current_revision(

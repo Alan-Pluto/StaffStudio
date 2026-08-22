@@ -105,11 +105,11 @@ class HarnessTaskAgent:
         recent_task_summaries = _string_list(
             checkpoint.get("recent_task_summaries")
         )[-8:]
-        non_retryable_action_signatures = set(
-            _string_list(checkpoint.get("non_retryable_action_signatures"))
-            if same_step
-            else []
-        )
+        # A non-retryable failure only blocks an identical call inside this
+        # invocation of the AgentLoop.  Persisting the signature in the
+        # checkpoint made a later user turn inherit an obsolete failure even
+        # after its inputs or external state had changed.
+        non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
 
@@ -141,9 +141,6 @@ class HarnessTaskAgent:
                 "artifacts": artifacts[-20:],
                 "loaded_general_skill_names": loaded_general_skill_names[-20:],
                 "recent_task_summaries": recent_task_summaries[-8:],
-                "non_retryable_action_signatures": sorted(
-                    non_retryable_action_signatures
-                )[-20:],
             }
             return result
 
@@ -403,6 +400,17 @@ class HarnessTaskAgent:
                     dict(action.arguments or {}),
                 )
                 if action_signature in non_retryable_action_signatures:
+                    result = {
+                        "success": False,
+                        "error": {
+                            "code": "NON_RETRYABLE_ACTION_REPEATED",
+                            "message": (
+                                "相同工具与参数此前已失败且不可重试，本次未再次执行。"
+                                "请根据前一次错误更换工具或参数，或结束当前任务。"
+                            ),
+                            "retryable": False,
+                        },
+                    }
                     if trace_sink:
                         trace_sink(
                             "harness_action_failed",
@@ -412,43 +420,30 @@ class HarnessTaskAgent:
                                 "error": {
                                     "code": "NON_RETRYABLE_ACTION_REPEATED",
                                     "message": (
-                                        "模型重复提交了已标记为不可重试的相同工具调用。"
+                                        "模型重复提交了已标记为不可重试的相同工具调用；"
+                                        "调用未执行，AgentLoop 将继续重新规划。"
                                     ),
                                     "retryable": False,
                                 },
                             },
                         )
-                    return finish(TaskExecutionResult(
-                        task_frame_id=requirement.task_frame_id,
-                        status="failed",
-                        reply_fragment="相同的不可重试工具调用被阻止。",
-                        task_summary="Harness 阻止重复的不可重试动作。",
-                        capability_results=capability_results,
-                        citations=citations,
-                        evidence_results=evidence_results,
-                        artifacts=artifacts,
-                        action_count=iteration,
-                        error={
-                            "code": "NON_RETRYABLE_ACTION_REPEATED",
-                            "message": "相同工具与参数已失败且不可重试。",
-                        },
-                    ))
-                try:
-                    _raise_if_cancelled(is_cancelled)
-                    result = invoke_tool(tool_name, dict(action.arguments or {}))
-                    _raise_if_cancelled(is_cancelled)
-                except (HarnessExecutionCancelled, HarnessExecutionFenced):
-                    raise
-                except Exception as exc:
-                    result = {
-                        "success": False,
-                        "error": {
-                            "code": "HARNESS_TOOL_ERROR",
-                            "message": str(exc),
-                        },
-                    }
-                if _is_non_retryable_failure(result):
-                    non_retryable_action_signatures.add(action_signature)
+                else:
+                    try:
+                        _raise_if_cancelled(is_cancelled)
+                        result = invoke_tool(tool_name, dict(action.arguments or {}))
+                        _raise_if_cancelled(is_cancelled)
+                    except (HarnessExecutionCancelled, HarnessExecutionFenced):
+                        raise
+                    except Exception as exc:
+                        result = {
+                            "success": False,
+                            "error": {
+                                "code": "HARNESS_TOOL_ERROR",
+                                "message": str(exc),
+                            },
+                        }
+                    if _is_non_retryable_failure(result):
+                        non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
             if _is_loaded_general_skill_result(tool_name, result):
                 loaded_general_skill_names.append(tool_name)

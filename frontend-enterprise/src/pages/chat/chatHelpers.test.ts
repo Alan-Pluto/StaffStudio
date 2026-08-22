@@ -163,6 +163,22 @@ describe('chat history consumer contract', () => {
     expect(knowledgeCitations(item, 'No inline citation markers')).toEqual([]);
   });
 
+  it('keeps separately cited chunks even when their display titles match', () => {
+    const item = message({
+      metadata: {
+        knowledge_citations: [
+          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '同一制度' },
+          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '同一制度' },
+        ],
+      },
+    });
+
+    expect(knowledgeCitations(item, item.content)).toEqual([
+      expect.objectContaining({ id: 'citation-1', label: '[1]' }),
+      expect.objectContaining({ id: 'citation-2', label: '[2]' }),
+    ]);
+  });
+
   it('restores scheduled drafts and attachments from persisted metadata', () => {
     const draft = {
       should_create: true,

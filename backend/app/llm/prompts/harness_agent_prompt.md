@@ -67,7 +67,8 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
   的最终交付物；未显式发布但经安全扫描发现的用户文件也会作为产物返回。
 - HTTP/MCP Tool 的 JSON 结果序列化后不超过 2000 字符时直接返回；更大的结果只返回
   `kind=sandbox_json_file`、`sandbox_path`、`size` 和 `sha256`，完整内容保存在当前
-  TaskFrame 沙箱。需要查看时调用现有 `read_file`；返回 truncated=true 时，把返回的
+  TaskFrame 沙箱。`sandbox_path` 是不透明地址，调用 `read_file` 时必须将其完整值直接放入
+  `arguments.path`，禁止按标点解析、截断、改写扩展名或自行拼接路径；返回 truncated=true 时，把返回的
   `continuation_token` 和同一个 path 原样传给下一次 read_file，禁止猜测 byte offset；
   不得猜测未读取内容，也不得要求系统生成额外摘要或 Schema。
 - 如果后续 Tool 需要完整的前序大 JSON，把该 `sandbox_json_file` 引用对象原样放入对应

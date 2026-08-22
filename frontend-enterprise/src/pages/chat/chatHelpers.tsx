@@ -1742,9 +1742,15 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
     if (!citation || !citation.id) return;
     const labelNumber = citationLabelNumber(citation, index + 1);
     if (!usedLabels.has(labelNumber)) return;
-    const identity = (
-      citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.concept_id || citation.id
-    );
+    // A document can contribute multiple cited chunks with the same display
+    // title. Prefer durable source identifiers so those cards are not merged.
+    // Historical citations without source identifiers retain title-based
+    // deduplication for backwards compatibility.
+    const identity = citation.chunk_id
+      ? `chunk:${citation.chunk_id}`
+      : citation.concept_id
+        ? `concept:${citation.concept_id}`
+        : (citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.id);
     const key = normalizeMessageText(identity).toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
