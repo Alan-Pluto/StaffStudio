@@ -639,6 +639,71 @@ def test_member_task_message_includes_completed_dependency_outputs() -> None:
         assert "results/policy.md" in message
 
 
+def test_team_progress_message_updates_after_each_member_result() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        tl_session = ChatSession(
+            id="session-progress-tl",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        run = TeamRun(
+            id="team-run-progress",
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id="source-turn-progress",
+            created_by_user_id="user_admin",
+            status="running",
+        )
+        progress_message = Message(
+            id="message-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已完成 2 个团队任务的拆分与派发。",
+            metadata_json={"team_run_id": run.id},
+        )
+        tasks = [
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="查询请假制度",
+                status="done",
+                assignee_agent_id="agent_worker",
+            ),
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="查询办公用品制度",
+                status="in_progress",
+                assignee_agent_id="agent_worker2",
+            ),
+        ]
+        db.add(tl_session)
+        db.add(run)
+        db.add(progress_message)
+        db.add_all(tasks)
+        db.commit()
+
+        wakeup._update_team_run_progress_message(db, run, tasks)
+        db.commit()
+
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到 1/2 项成员回复。"
+        assert progress_message.metadata_json["team_progress"] == {
+            "phase": "collecting",
+            "completed_tasks": 1,
+            "total_tasks": 2,
+            "status_text": "正在等待其他成员完成",
+        }
+
+
 def test_tl_chat_rejects_cyclic_dependency_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     with _test_session() as db:
         team = _seed_team(db)
@@ -846,9 +911,26 @@ def test_planner_member_completion_skips_review_and_enqueues_one_synthesis(
             created_by_tl=True,
             assignee_agent_id="agent_worker",
         )
+        progress_message = Message(
+            id="message-team-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已完成 1 个团队任务的拆分与派发。",
+            metadata_json={
+                "team_run_id": run.id,
+                "team_progress": {
+                    "phase": "collecting",
+                    "completed_tasks": 0,
+                    "total_tasks": 1,
+                    "status_text": "正在等待成员回复",
+                },
+            },
+        )
         db.add(tl_session)
         db.add(run)
         db.add(task)
+        db.add(progress_message)
         db.flush()
         wake = enqueue_wake_event(
             db,
@@ -870,6 +952,14 @@ def test_planner_member_completion_skips_review_and_enqueues_one_synthesis(
         assert task.status == "done"
         assert task.report_json["full_reply"] == "市场分析完成"
         assert run.status == "synthesizing"
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到全部 1 项成员回复。"
+        assert progress_message.metadata_json["team_progress"] == {
+            "phase": "synthesizing",
+            "completed_tasks": 1,
+            "total_tasks": 1,
+            "status_text": "正在整理答案",
+        }
         assert db.exec(
             select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "task_report")
         ).all() == []
@@ -954,11 +1044,28 @@ def test_team_synthesis_publishes_final_answer_on_original_tl_session(
                 ],
             },
         )
+        progress_message = Message(
+            id="message-final-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已收到全部 2 项成员回复。",
+            metadata_json={
+                "team_run_id": run.id,
+                "team_progress": {
+                    "phase": "synthesizing",
+                    "completed_tasks": 2,
+                    "total_tasks": 2,
+                    "status_text": "正在整理答案",
+                },
+            },
+        )
         db.add(tl_session)
         db.add(source)
         db.add(run)
         db.add(task)
         db.add(second_task)
+        db.add(progress_message)
         db.flush()
         wake = enqueue_wake_event(
             db,
@@ -1003,6 +1110,9 @@ def test_team_synthesis_publishes_final_answer_on_original_tl_session(
         assert [
             citation["title"] for citation in final.metadata_json["knowledge_citations"]
         ] == ["方案 A 成本表", "方案 B 风险表"]
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到全部 2 项成员回复，汇总已完成。"
+        assert progress_message.metadata_json["team_progress"]["phase"] == "completed"
 
 
 def test_tl_review_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -846,6 +846,14 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
                 run.error = str(exc)
                 run.updated_at = utc_now()
                 db.add(run)
+                tasks = list(
+                    db.exec(
+                        select(TeamTask)
+                        .where(TeamTask.team_run_id == run.id)
+                        .order_by(TeamTask.created_at)
+                    ).all()
+                )
+                _update_team_run_progress_message(db, run, tasks, phase="failed")
         else:
             _escalate_task_on_failure(db, event, exc)
         event.status = "failed"
@@ -1179,6 +1187,96 @@ def build_team_synthesis_message(
     return "\n".join(lines)
 
 
+def _team_progress_message(db: Session, run: TeamRun) -> Message | None:
+    messages = list(
+        db.exec(
+            select(Message)
+            .where(
+                Message.tenant_id == run.tenant_id,
+                Message.session_id == run.tl_session_id,
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc())
+        ).all()
+    )
+    for message in messages:
+        metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+        if (
+            str(metadata.get("team_run_id") or "") == run.id
+            and metadata.get("team_synthesis") is not True
+        ):
+            return message
+    return None
+
+
+def _update_team_run_progress_message(
+    db: Session,
+    run: TeamRun,
+    tasks: list[TeamTask],
+    *,
+    phase: Literal["collecting", "synthesizing", "completed", "failed"] | None = None,
+) -> Message | None:
+    """Rewrite the original TL dispatch reply as the asynchronous team run advances."""
+
+    message = _team_progress_message(db, run)
+    if message is None:
+        return None
+    total = len(tasks)
+    completed = sum(task.status in {"done", "escalated"} for task in tasks)
+    resolved_phase = phase
+    if resolved_phase is None:
+        if run.status == "completed":
+            resolved_phase = "completed"
+        elif run.status == "failed":
+            resolved_phase = "failed"
+        elif run.status == "synthesizing" or (total > 0 and completed == total):
+            resolved_phase = "synthesizing"
+        else:
+            resolved_phase = "collecting"
+
+    if resolved_phase == "collecting":
+        if completed:
+            content = f"已收到 {completed}/{total} 项成员回复。"
+            status_text = "正在等待其他成员完成"
+        else:
+            content = f"已完成 {total} 个团队任务的拆分与派发。"
+            status_text = "正在等待成员回复"
+    elif resolved_phase == "synthesizing":
+        content = f"已收到全部 {total} 项成员回复。"
+        status_text = "正在整理答案"
+    elif resolved_phase == "completed":
+        content = f"已收到全部 {total} 项成员回复，汇总已完成。"
+        status_text = ""
+    else:
+        content = "成员回复已经收齐，但整理答案时遇到问题。"
+        status_text = ""
+
+    metadata = dict(message.metadata_json or {})
+    current_progress = metadata.get("team_progress")
+    current_phase = (
+        str(current_progress.get("phase") or "")
+        if isinstance(current_progress, dict)
+        else ""
+    )
+    if current_phase == "completed" and resolved_phase != "completed":
+        return message
+    metadata["team_progress"] = {
+        "phase": resolved_phase,
+        "completed_tasks": completed,
+        "total_tasks": total,
+        "status_text": status_text,
+    }
+    message.content = content
+    message.metadata_json = metadata
+    db.add(message)
+    session = db.get(ChatSession, run.tl_session_id)
+    if session is not None:
+        session.summary = f"最近回复：{content[:120]}"
+        session.updated_at = utc_now()
+        db.add(session)
+    return message
+
+
 def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | None:
     """Start one final TL synthesis after the complete team DAG reaches a terminal state."""
 
@@ -1203,6 +1301,7 @@ def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | 
         run.status = "awaiting_input"
         run.updated_at = utc_now()
         db.add(run)
+        _update_team_run_progress_message(db, run, tasks, phase="collecting")
         db.commit()
         return None
     terminal_statuses = {"done", "escalated"}
@@ -1211,7 +1310,8 @@ def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | 
             run.status = "running"
             run.updated_at = utc_now()
             db.add(run)
-            db.commit()
+        _update_team_run_progress_message(db, run, tasks, phase="collecting")
+        db.commit()
         return None
     claim = db.exec(
         update(TeamRun)
@@ -1224,15 +1324,19 @@ def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | 
     db.commit()
     if claim.rowcount != 1:
         return None
+    run = db.get(TeamRun, run.id)
+    if run is None:
+        return None
+    _update_team_run_progress_message(db, run, tasks, phase="synthesizing")
+    db.commit()
     leader = get_team_leader(db, team.id)
     if leader is None:
-        run = db.get(TeamRun, run.id)
-        if run is not None:
-            run.status = "failed"
-            run.error = "团队缺少 TL，无法汇总团队结果。"
-            run.updated_at = utc_now()
-            db.add(run)
-            db.commit()
+        run.status = "failed"
+        run.error = "团队缺少 TL，无法汇总团队结果。"
+        run.updated_at = utc_now()
+        db.add(run)
+        _update_team_run_progress_message(db, run, tasks, phase="failed")
+        db.commit()
         return None
     wake = enqueue_wake_event(
         db,
@@ -1267,6 +1371,8 @@ def _execute_team_synthesis(
     )
     if not tasks or any(task.status not in {"done", "escalated"} for task in tasks):
         raise RuntimeError("团队任务尚未全部结束，不能开始最终汇总")
+    _update_team_run_progress_message(db, run, tasks, phase="synthesizing")
+    db.commit()
     synthesis_session = (
         db.get(ChatSession, run.synthesis_session_id) if run.synthesis_session_id else None
     )
@@ -1332,6 +1438,7 @@ def _execute_team_synthesis(
     run.updated_at = utc_now()
     run.error = None
     db.add(run)
+    _update_team_run_progress_message(db, run, tasks, phase="completed")
     db.commit()
 
 

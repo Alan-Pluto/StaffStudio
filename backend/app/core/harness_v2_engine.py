@@ -635,8 +635,7 @@ class HarnessV2Engine:
         if team_publish_result is not None and not execution_results:
             task_count = len(team_publish_result.task_ids)
             reply = (
-                f"已将需求拆分为 {task_count} 个团队任务并开始执行。"
-                "成员的执行过程会在当前对话中持续展开，全部任务结束后由我统一汇总。"
+                f"已完成 {task_count} 个团队任务的拆分与派发。"
             )
         if reply is None:
             reply = self.owner.response_generator.generate(
@@ -662,6 +661,12 @@ class HarnessV2Engine:
         if team_publish_result is not None:
             assistant_metadata["team_run_id"] = team_publish_result.run_id
             assistant_metadata["team_task_ids"] = list(team_publish_result.task_ids)
+            assistant_metadata["team_progress"] = {
+                "phase": "collecting",
+                "completed_tasks": 0,
+                "total_tasks": len(team_publish_result.task_ids),
+                "status_text": "正在等待成员回复",
+            }
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
         if request.message_visibility != "visible":
