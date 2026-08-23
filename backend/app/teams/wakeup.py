@@ -232,7 +232,10 @@ def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework
     if blackboard:
         lines.append("团队黑板(相关工作记忆):")
         lines.extend(blackboard)
-    lines.append("完成后直接回复任务结果，按当前任务自然表达，不要添加固定报告模板或额外标题。")
+    lines.append(
+        "完成后像正常单轮对话一样直接回答，可正常使用 Markdown；"
+        "不要把回复包装成结构化完成报告，也不要套用固定的结论/过程要点/交付物模板。"
+    )
     lines.append(
         "如果你在执行中发现了值得全团队记住的信息(关键结论/约定口径/容易踩的坑),"
         "请在报告末尾额外输出一个围栏代码块 ```json,内容形如:"
