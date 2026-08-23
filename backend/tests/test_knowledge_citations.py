@@ -37,6 +37,19 @@ def test_compact_knowledge_citation_labels_supports_historical_filtered_metadata
     assert [item["label"] for item in citations] == ["[1]", "[2]"]
 
 
+def test_compact_knowledge_citation_labels_preserves_range_order() -> None:
+    content, citations = compact_knowledge_citation_labels(
+        "请假制度依据员工手册。[1]-[4]\n\n参考来源：[1] [2] [3] [4] [5]",
+        [
+            {"id": f"kref_{index}", "label": f"[{index}]", "title": f"来源 {index}"}
+            for index in range(1, 6)
+        ],
+    )
+
+    assert content == "请假制度依据员工手册。[1]-[4]\n\n参考来源：[1] [2] [3] [4] [5]"
+    assert [item["label"] for item in citations] == ["[1]", "[2]", "[3]", "[4]", "[5]"]
+
+
 def test_compact_knowledge_citation_labels_removes_unsupported_model_labels() -> None:
     content, citations = compact_knowledge_citation_labels(
         "制度正文。[1]\n\n参考来源：[1] [2] [3] [4]",

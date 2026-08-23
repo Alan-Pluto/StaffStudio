@@ -58,6 +58,7 @@ from app.db.models import (
     HarnessTurnRecord,
     Message,
     Skill,
+    Team,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
 from app.memory.service import memory_read
@@ -86,6 +87,14 @@ def _turn_skill_projection(
     _ = interaction_mode
     skills = expand_visible_sops(source_skills)
     return skills, discoverable_sops(skills)
+
+
+def _turn_planner_message(
+    request: ChatTurnRequest,
+) -> str:
+    """Keep server-only execution context out of Planner task requirements."""
+
+    return request.message
 
 
 def _apply_forced_sop_snapshot(
@@ -308,6 +317,14 @@ class HarnessV2Engine:
 
         self._renew_session_lease()
         planner_state = self.store.planner_state(session)
+        team_context = request.team_context
+        team: Team | None = None
+        if request.interaction_mode == "team_tl" and session.team_id:
+            team = self.db.get(Team, session.team_id)
+            if team is not None and team_context is None:
+                from app.teams.wakeup import build_team_planner_context
+
+                team_context = build_team_planner_context(self.db, team)
         if self.slash_command:
             if self.slash_command.kind in {"skill", "tool"}:
                 direct_manifest = self.manifests.build(
@@ -326,13 +343,15 @@ class HarnessV2Engine:
             )
         else:
             plan = self.planner.plan(
-                execution_request.message,
+                _turn_planner_message(request),
                 session,
                 routing_skills,
                 model_config,
                 deepcopy(conversation_context),
                 memory_context,
                 planner_state,
+                interaction_mode=request.interaction_mode,
+                team_context=team_context,
             )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
@@ -376,6 +395,34 @@ class HarnessV2Engine:
                 "execution_engine": "harness_v2",
             },
         )
+        team_publish_result = None
+        remote_frames = [
+            frame for frame in plan.task_frames if frame.execution_target == "team_member"
+        ]
+        if remote_frames:
+            if request.interaction_mode != "team_tl" or team is None:
+                raise RuntimeError("团队成员 TaskFrame 缺少可信团队上下文。")
+            from app.teams.wakeup import publish_team_planner_frames
+
+            team_publish_result = publish_team_planner_frames(
+                self.db,
+                team=team,
+                session=session,
+                source_turn_id=user_message.id,
+                created_by_user_id=request.user_id,
+                frames=remote_frames,
+            )
+            if team_publish_result is None:
+                raise RuntimeError("团队成员 TaskFrame 未能持久化，已停止本轮虚假分发。")
+            plan = plan.model_copy(
+                update={
+                    "task_frames": [
+                        frame
+                        for frame in plan.task_frames
+                        if frame.execution_target != "team_member"
+                    ]
+                }
+            )
         if plan.decision == "complete_task":
             active_task_frame_id = self.store.active_task_frame_id(session)
             self.store.complete_active_frame(
@@ -585,6 +632,12 @@ class HarnessV2Engine:
         )
         self._renew_session_lease()
         reply = _single_task_reply(execution_results)
+        if team_publish_result is not None and not execution_results:
+            task_count = len(team_publish_result.task_ids)
+            reply = (
+                f"已将需求拆分为 {task_count} 个团队任务并开始执行。"
+                "成员的执行过程会在当前对话中持续展开，全部任务结束后由我统一汇总。"
+            )
         if reply is None:
             reply = self.owner.response_generator.generate(
                 execution_request.message,
@@ -606,6 +659,9 @@ class HarnessV2Engine:
             "execution_engine": "harness_v2",
             "task_frame_ids": [row.task_id for row in records],
         }
+        if team_publish_result is not None:
+            assistant_metadata["team_run_id"] = team_publish_result.run_id
+            assistant_metadata["team_task_ids"] = list(team_publish_result.task_ids)
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
         if request.message_visibility != "visible":
