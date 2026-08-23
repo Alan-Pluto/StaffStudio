@@ -196,7 +196,7 @@ def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
 
 
 def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework: bool) -> str:
-    """成员执行上下文注入:任务描述(+ 退回意见)+ 黑板 + 报告与黑板建议要求。"""
+    """成员执行上下文注入:任务描述(+ 退回意见)+ 黑板 + 黑板建议要求。"""
     lines = [f"你是团队「{team.name}」的成员,请完成以下团队任务。"]
     lines.append(f"任务标题:{task.title}")
     if task.description:
@@ -232,7 +232,7 @@ def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework
     if blackboard:
         lines.append("团队黑板(相关工作记忆):")
         lines.extend(blackboard)
-    lines.append("完成后请输出结构化完成报告,包含:结论、过程要点、交付物。")
+    lines.append("完成后直接回复任务结果，按当前任务自然表达，不要添加固定报告模板或额外标题。")
     lines.append(
         "如果你在执行中发现了值得全团队记住的信息(关键结论/约定口径/容易踩的坑),"
         "请在报告末尾额外输出一个围栏代码块 ```json,内容形如:"
