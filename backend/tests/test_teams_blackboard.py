@@ -333,11 +333,11 @@ def test_blackboard_injection_into_messages() -> None:
         member_msg = build_member_task_message(db, team, task, rework=False)
         assert "团队黑板" in member_msg
         assert "- [pricing,竞品] 竞品 A 定价 99 元" in member_msg
-        assert "blackboard_suggestions" in member_msg
-        assert "输出结构化完成报告" not in member_msg
-        assert "像正常单轮对话一样直接回答" in member_msg
-        assert "可正常使用 Markdown" in member_msg
-        assert "不要套用固定的结论/过程要点/交付物模板" in member_msg
+        assert member_msg.startswith("请完成以下任务。")
+        assert "你是团队" not in member_msg
+        assert "blackboard_suggestions" not in member_msg
+        assert "结构化完成报告" not in member_msg
+        assert "结论/过程要点/交付物" not in member_msg
 
         tl_chat_msg = build_tl_chat_message(db, team, "帮我看看竞品定价")
         assert "团队黑板" in tl_chat_msg

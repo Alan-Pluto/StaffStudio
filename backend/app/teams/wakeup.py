@@ -196,8 +196,8 @@ def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
 
 
 def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework: bool) -> str:
-    """成员执行上下文注入:任务描述(+ 退回意见)+ 黑板 + 黑板建议要求。"""
-    lines = [f"你是团队「{team.name}」的成员,请完成以下团队任务。"]
+    """Build the member's user turn from task context without changing its normal prompt."""
+    lines = ["请完成以下任务。"]
     lines.append(f"任务标题:{task.title}")
     if task.description:
         lines.append(f"任务描述:{task.description}")
@@ -232,16 +232,6 @@ def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework
     if blackboard:
         lines.append("团队黑板(相关工作记忆):")
         lines.extend(blackboard)
-    lines.append(
-        "完成后像正常单轮对话一样直接回答，可正常使用 Markdown；"
-        "不要把回复包装成结构化完成报告，也不要套用固定的结论/过程要点/交付物模板。"
-    )
-    lines.append(
-        "如果你在执行中发现了值得全团队记住的信息(关键结论/约定口径/容易踩的坑),"
-        "请在报告末尾额外输出一个围栏代码块 ```json,内容形如:"
-        '{"blackboard_suggestions": [{"content": "值得记住的事", "tags": ["标签"]}]}。'
-        "建议由 TL 验收时裁决后才会真正写入团队黑板;没有值得记录的信息就不要输出该代码块。"
-    )
     return "\n".join(lines)
 
 
