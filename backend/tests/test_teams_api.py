@@ -994,6 +994,9 @@ def test_team_synthesis_publishes_final_answer_on_original_tl_session(
         )
         assert "方案 A 成本更低[1]" in synthesis_messages[0]
         assert "方案 B 风险更小[2]" in synthesis_messages[0]
+        assert "最终回答必须严格使用以下 Markdown 版式" in synthesis_messages[0]
+        assert "每个团队任务方向使用 `## <方向名称>` 单独成节" in synthesis_messages[0]
+        assert "禁止出现“结构化完成报告”" in synthesis_messages[0]
         assert final.metadata_json["team_run_id"] == run.id
         assert final.metadata_json["team_synthesis"] is True
         assert final.metadata_json["user_message_id"] == source.id

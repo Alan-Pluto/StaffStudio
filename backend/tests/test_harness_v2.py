@@ -461,6 +461,16 @@ def test_single_task_reply_keeps_multi_task_and_empty_reply_on_synthesis_path() 
     assert _single_task_reply([empty]) is None
 
 
+def test_harness_finish_prompt_requires_user_visible_markdown_layout() -> None:
+    prompt = harness_agent_module.PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "用户可见回复排版规则（适用于 `finish.reply_fragment`）" in prompt
+    assert "必须用 `##` 或 `###` 小标题分组" in prompt
+    assert "每一项独立成行" in prompt
+    assert "不要添加“结构化完成报告”" in prompt
+    assert "不要在 JSON 对象之外输出 Markdown" in prompt
+
+
 def test_combine_results_exposes_only_terminal_sop_step_reply() -> None:
     collected_name = TaskExecutionResult(
         task_frame_id="task-purchase",

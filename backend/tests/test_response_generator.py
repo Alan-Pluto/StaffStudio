@@ -706,3 +706,21 @@ def test_response_prompt_preserves_previous_reply_for_format_followup() -> None:
     instructions = prompt["_agent_stage"]["instructions"]
     assert "最近一条 assistant 回复作为待处理内容" in instructions
     assert "[label](https://example.com)" in instructions
+
+
+def test_response_prompt_requires_readable_markdown_without_report_template() -> None:
+    prompt = ResponseGenerator()._stage_payload(
+        {
+            "user_message": "查询请假制度和办公用品制度",
+            "conversation_context": {"messages": []},
+        },
+        None,
+    )
+
+    stage = prompt["_agent_stage"]
+    instructions = stage["instructions"]
+    assert "两个及以上主题" in instructions
+    assert "必须用 `##` 或 `###` 小标题分组" in instructions
+    assert "禁止把“一、……1.……2.……二、……”连续塞进一个长段落" in instructions
+    assert "不添加“结构化完成报告”" in instructions
+    assert "Markdown 正文" in stage["output_contract"]
