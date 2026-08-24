@@ -29,10 +29,11 @@ def compact_knowledge_citation_labels(
     citations: object,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Keep cited sources and renumber them by first appearance in the reply."""
+    content = SOURCE_FOOTER_PATTERN.sub("", content.rstrip()).rstrip()
     if not isinstance(citations, list) or not citations:
         # A model may emit a reference footer even when retrieval produced no
         # durable citations. Do not expose labels that cannot open a source.
-        return SOURCE_FOOTER_PATTERN.sub("", content.rstrip()).rstrip(), []
+        return content, []
 
     citations_by_label: dict[int, dict[str, Any]] = {}
     for index, citation in enumerate(citations, start=1):
@@ -55,8 +56,6 @@ def compact_knowledge_citation_labels(
         ordered_labels = list(citations_by_label)
         if not ordered_labels:
             return content, []
-        source_labels = " ".join(f"[{label}]" for label in ordered_labels)
-        content = f"{content.rstrip()}\n\n参考来源：{source_labels}"
 
     label_mapping = {old_label: index for index, old_label in enumerate(ordered_labels, start=1)}
 

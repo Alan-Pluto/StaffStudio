@@ -1096,13 +1096,12 @@ def test_team_synthesis_publishes_final_answer_on_original_tl_session(
         final = db.get(Message, run.final_message_id)
         assert final is not None
         assert final.session_id == tl_session.id
-        assert final.content == (
-            "综合建议：优先方案 A，并为关键风险设置兜底。\n\n参考来源：[1] [2]"
-        )
+        assert final.content == "综合建议：优先方案 A，并为关键风险设置兜底。"
         assert "方案 A 成本更低[1]" in synthesis_messages[0]
         assert "方案 B 风险更小[2]" in synthesis_messages[0]
         assert "最终回答必须严格使用以下 Markdown 版式" in synthesis_messages[0]
         assert "每个团队任务方向使用 `## <方向名称>` 单独成节" in synthesis_messages[0]
+        assert "不要输出单独的“参考来源”" in synthesis_messages[0]
         assert "禁止出现“结构化完成报告”" in synthesis_messages[0]
         assert final.metadata_json["team_run_id"] == run.id
         assert final.metadata_json["team_synthesis"] is True

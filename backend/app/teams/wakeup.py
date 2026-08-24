@@ -1177,7 +1177,8 @@ def build_team_synthesis_message(
             "方向名称优先沿用上面的任务标题。",
             "- 每节先给该方向的结论，再用项目符号或有序列表展开规则、条件、步骤和关键依据；"
             "每一项独立成行，不得把多级编号和多个方向压进同一个长段落。",
-            "- 引用 `[n]` 紧跟其支撑的事实；如需集中展示来源，只在正文末尾另起“参考来源”一段。",
+            "- 引用 `[n]` 只紧跟其支撑的事实；不要输出单独的“参考来源”“参考资料”"
+            "“引用来源”或“资料来源”标题、列表或页脚，界面会统一展示知识来源。",
             "- 仅在确有失败、缺失或风险时使用 `> 注意：...` 单独说明。不要输出 assignee、"
             "status、工具名、内部执行过程或思考链路。",
             "- 禁止出现“结构化完成报告”“完成报告”“总结报告”等标题，也不要套用固定的"
@@ -1406,9 +1407,6 @@ def _execute_team_synthesis(
     )
     member_citations, _ = _team_synthesis_evidence(tasks)
     reply = result.reply.rstrip()
-    if member_citations:
-        labels = " ".join(str(citation["label"]) for citation in member_citations)
-        reply = f"{reply}\n\n参考来源：{labels}"
     tl_session = db.get(ChatSession, run.tl_session_id)
     if tl_session is None or tl_session.team_id != team.id:
         raise RuntimeError("团队 TL 原始会话不存在，无法发布最终汇总")
