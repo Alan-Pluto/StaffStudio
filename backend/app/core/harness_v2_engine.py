@@ -22,6 +22,7 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
@@ -784,6 +785,12 @@ class HarnessV2Engine:
             db=self.db,
         )
         image_payloads = validated_task_image_payloads(request.attachments)
+        published_deliverables = list_published_deliverables(
+            self.db,
+            tenant_id=request.tenant_id,
+            session_id=session.id,
+            exclude_task_frame_id=row.task_id,
+        )
         step_timeout_seconds = (
             _skill_step_timeout_seconds(active_skill)
             if frame.kind == "sop"
@@ -840,6 +847,7 @@ class HarnessV2Engine:
                     *[_prior_result(item) for item in results],
                 ],
                 attachment_descriptors,
+                published_deliverables,
                 source_user_message=(
                     request.message
                     if row.source_turn_id == self.user_message_id

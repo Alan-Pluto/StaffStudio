@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -978,6 +979,13 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
                 "materialized": True,
             }
         ],
+        published_deliverables=[
+            {
+                "task_frame_id": "task-prior",
+                "path": "results/开发排期文档.md",
+                "display_name": "开发排期文档.md",
+            }
+        ],
         out_of_scope_task_intents=["查询北京天气", "查询北京天气"],
     )
 
@@ -1003,6 +1011,13 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
             "filename": "evidence.txt",
             "workspace_path": "attachments/attachment-1-evidence.txt",
             "materialized": True,
+        }
+    ]
+    assert requirement.published_deliverables == [
+        {
+            "task_frame_id": "task-prior",
+            "path": "results/开发排期文档.md",
+            "display_name": "开发排期文档.md",
         }
     ]
     assert requirement.out_of_scope_task_intents == ["查询北京天气"]
@@ -1824,6 +1839,117 @@ def test_file_mutation_is_private_until_publish_artifact_succeeds(
             "source": "harness",
         }
     ]
+
+
+def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    content = "# 开发排期\n\n第一阶段完成接口设计。\n"
+    encoded = content.encode("utf-8")
+    with Session(engine) as db:
+        session = _chat_session()
+        db.add(session)
+        db.add(
+            HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                source_turn_id="turn-previous",
+                task_id="task-previous",
+            )
+        )
+        db.add(
+            HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id="session-other",
+                source_turn_id="turn-other",
+                task_id="task-other",
+            )
+        )
+        workspace = harness_task_workspace_path(
+            tenant_id="tenant-demo",
+            session_id=session.id,
+            task_frame_id="task-previous",
+            db=db,
+        )
+        (workspace / "results").mkdir(parents=True)
+        (workspace / "results" / "schedule.md").write_text(content, encoding="utf-8")
+        db.add(
+            Message(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                role="assistant",
+                content="已生成开发排期文档。",
+                metadata_json={
+                    "harness_artifacts": [
+                        {
+                            "type": "workspace_file",
+                            "task_frame_id": "task-previous",
+                            "path": "results/schedule.md",
+                            "display_name": "开发排期文档.md",
+                            "description": "项目排期",
+                            "size": len(encoded),
+                            "sha256": hashlib.sha256(encoded).hexdigest(),
+                        }
+                    ]
+                },
+            )
+        )
+        db.commit()
+
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=session,
+            task_frame_id="task-current",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        listed = invoker.invoke(
+            "list_published_deliverables",
+            {"query": "开发排期"},
+        )
+        read = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+
+        assert listed["success"] is True
+        assert listed["data"]["deliverables"][0]["display_name"] == "开发排期文档.md"
+        assert read["success"] is True
+        assert read["data"]["content"] == content
+        assert read["data"]["task_frame_id"] == "task-previous"
+
+        denied = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-other",
+                "path": "results/schedule.md",
+            },
+        )
+        assert denied["success"] is False
+        assert denied["error"]["code"] == "PUBLISHED_DELIVERABLE_NOT_FOUND"
+
+        (workspace / "results" / "schedule.md").write_text("tampered", encoding="utf-8")
+        changed = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+
+    assert changed["success"] is False
+    assert changed["error"]["code"] == "PUBLISHED_DELIVERABLE_CHANGED"
 
 
 def test_workspace_discovery_returns_source_and_generated_image(
