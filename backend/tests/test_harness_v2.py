@@ -39,6 +39,7 @@ from app.core.harness_v2_engine import (
     _globalize_citations,
     _is_recoverable_action_protocol_failure,
     _prior_result,
+    _response_task_payload,
     _sibling_task_intents,
     _single_task_reply,
     _turn_planner_message,
@@ -459,6 +460,57 @@ def test_single_task_reply_keeps_multi_task_and_empty_reply_on_synthesis_path() 
 
     assert _single_task_reply([completed, awaiting]) is None
     assert _single_task_reply([empty]) is None
+
+
+def test_single_task_reply_synthesizes_incomplete_structured_projection() -> None:
+    structured_result = {
+        "requirements": ["需求分析", "FS 草稿", "追踪矩阵"],
+        "status": "complete",
+    }
+    incomplete = TaskExecutionResult(
+        task_frame_id="task-incomplete-json",
+        status="completed",
+        reply_fragment="{",
+        structured_result=structured_result,
+    )
+    matching = incomplete.model_copy(
+        update={
+            "reply_fragment": json.dumps(
+                structured_result,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
+    )
+    markdown = incomplete.model_copy(update={"reply_fragment": "完整结果如下。"})
+
+    assert _single_task_reply([incomplete]) is None
+    assert _single_task_reply([matching]) == matching.reply_fragment
+    assert _single_task_reply([markdown]) == "完整结果如下。"
+
+
+def test_response_task_payload_keeps_structured_result_for_synthesis() -> None:
+    structured_result = {"fs": {"title": "ClickHouse 分析面板"}}
+    result = TaskExecutionResult(
+        task_frame_id="task-structured",
+        status="completed",
+        reply_fragment="{",
+        structured_result=structured_result,
+    )
+
+    payload = _response_task_payload(
+        SimpleNamespace(
+            user_intent="生成完整需求结果",
+            task_id="task-structured",
+            step_id="generate",
+            slots_json={},
+        ),
+        result,
+        None,
+        harness_v2_engine_module._step_result(result),
+    )
+
+    assert payload["structured_result"] == structured_result
 
 
 def test_harness_finish_prompt_requires_user_visible_markdown_layout() -> None:
@@ -3017,6 +3069,90 @@ def test_harness_agent_repairs_invalid_tool_action_envelope_once(
         event_type == "harness_action_repair_requested"
         for event_type, _payload in trace_events
     ) == 1
+
+
+def test_harness_agent_executes_consecutive_json_actions_in_order(
+    monkeypatch,
+) -> None:
+    outputs = iter(
+        [
+            [
+                {
+                    "action": "tool",
+                    "tool_name": "skill.first",
+                    "arguments": {"query": "first"},
+                },
+                {
+                    "action": "tool",
+                    "tool_name": "skill.second",
+                    "arguments": {"query": "second"},
+                },
+            ],
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "两个能力均已执行。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json_sequence(self, _system_prompt, _payload):
+            return next(outputs)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-consecutive-actions",
+            kind="conversation",
+            goal="依次执行两个能力",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="skill-first",
+                        name="skill.first",
+                        kind="tool",
+                    ),
+                    CapabilityDescriptor(
+                        capability_id="skill-second",
+                        name="skill.second",
+                        kind="tool",
+                    ),
+                ]
+            ),
+        ),
+        _model_config(),
+        lambda name, arguments: (
+            invoked.append((name, arguments))
+            or {"success": True, "data": {"tool": name}}
+        ),
+        max_actions=3,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 3
+    assert invoked == [
+        ("skill.first", {"query": "first"}),
+        ("skill.second", {"query": "second"}),
+    ]
+    assert sum(
+        event_type == "harness_action_created"
+        for event_type, _payload in trace_events
+    ) == 3
+    assert any(
+        event_type == "harness_action_sequence_accepted"
+        and payload["action_count"] == 2
+        for event_type, payload in trace_events
+    )
 
 
 def test_invalid_action_protocol_failure_keeps_sop_loop_recoverable() -> None:

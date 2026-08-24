@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from copy import deepcopy
 from typing import Any
@@ -1607,8 +1608,29 @@ def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:
 
     if len(results) != 1:
         return None
-    reply = str(results[0].reply_fragment or "").strip()
+    result = results[0]
+    reply = str(result.reply_fragment or "").strip()
+    if _structured_reply_requires_synthesis(reply, result.structured_result):
+        return None
     return reply or None
+
+
+def _structured_reply_requires_synthesis(reply: str, structured_result: Any) -> bool:
+    """Reject an obviously partial JSON projection when complete data is available."""
+
+    if structured_result is None or not reply:
+        return False
+    looks_like_json = reply.startswith("{") or (
+        reply.startswith("[")
+        and (len(reply) == 1 or reply[1:2] in {"{", "[", '"'})
+    )
+    if not looks_like_json:
+        return False
+    try:
+        projected = json.loads(reply)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    return projected != structured_result
 
 
 def _response_task_payload(
@@ -1640,6 +1662,7 @@ def _response_task_payload(
             else None
         ),
         "task_summary": result.task_summary,
+        "structured_result": result.structured_result,
         "artifacts": list(result.artifacts),
     }
 

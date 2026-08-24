@@ -273,6 +273,7 @@ class ResponseGenerator:
                     "task_frame_id": item.get("task_frame_id"),
                     "status": item.get("status"),
                     "task_summary": item.get("task_summary"),
+                    "structured_result": item.get("structured_result"),
                     "current_step": compact_current_step(
                         content, str(item.get("current_step_id") or "") or None
                     ),
