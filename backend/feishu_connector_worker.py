@@ -33,10 +33,10 @@ def _user_data_dir() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "StaffDeck"
+        return Path.home() / "Library" / "Application Support" / "Staff Studio"
     if sys.platform == "win32":
-        return Path(os.environ.get("APPDATA", Path.home())) / "StaffDeck"
-    return Path.home() / ".local" / "share" / "StaffDeck"
+        return Path(os.environ.get("APPDATA", Path.home())) / "Staff Studio"
+    return Path.home() / ".local" / "share" / "Staff Studio"
 
 
 def binding_lock_path(binding_id: str, database_path: Path) -> Path:

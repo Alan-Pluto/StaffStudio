@@ -1,35 +1,6 @@
-<div align="center">
+# 💡 关于 Staff Studio
 
-<img src="packaging/assets/staffdeck_banner_cn.png" alt="StaffDeck 标志"  />
-
-<p align="center">
-  <a href="https://staffdeck.openbmb.cn/"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
-  <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
-  <br/>
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-社群-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  &nbsp;
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/飞书-交流群-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
-  &nbsp;
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/微信-交流群-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
-  <br/>
-</p>
-
-[English](./README.md) | **简体中文**
-
-
-</div>
-
-
-## 更新日志
-- **2026-08-18**: 我们推出v0.4.0，引入多员工智能协作与更快的调用链路。
-- **2026-08-06**: 我们推出v0.3.0，提供了更方便的SOP编辑与运行时沙箱。
-- **2026-08-03**: 我们推出v0.2.0，提供更好的harness系统和IM渠道支持。
-- **2026-07-15**：StaffDeck正式开源！欢迎大家使用反馈与Star支持。
-
-# 💡 关于StaffDeck
-
-StaffDeck是一套面向企业的数字员工构建与管理平台，帮助专业员工将工作经验、业务流程和判断标准固化为可以持续工作的数字员工，接手重复性任务，并将个人能力沉淀为可复用、可迭代、可追溯的组织资产。StaffDeck由[面壁智能](https://modelbest.cn/)，[东北大学-面壁智能数据智能联合实验室](https://neuir.github.io/)，[清华大学THUNLP实验室](https://nlp.csai.tsinghua.edu.cn/)，[OpenBMB](https://www.openbmb.cn/home)与[AI9Stars](https://github.com/AI9Stars)联合研发，面向希望将 AI 从个人效率工具升级为组织生产力的企业与机构。
+Staff Studio是一套面向企业的数字员工构建与管理平台，帮助专业员工将工作经验、业务流程和判断标准固化为可以持续工作的数字员工，接手重复性任务，并将个人能力沉淀为可复用、可迭代、可追溯的组织资产。
 
 ## 核心亮点
 
@@ -38,54 +9,10 @@ StaffDeck是一套面向企业的数字员工构建与管理平台，帮助专�
 - 📚 **文档结构感知的知识检索**：基于文档、章节、页面和摘要等层级构建可导航索引，让数字员工先判断信息可能位于哪里，再逐层定位原文；支持知识分桶、定向检索、来源引用和检索调试。
 - 🔌 **自主执行与持续迭代**：通过 HTTP API、MCP 和定时任务执行真实业务操作，并结合长期记忆、完整 Trace、真人接管、用户反馈和反馈分析形成持续迭代闭环。
 
-## 客户端下载
-
-访问 [StaffDeck 官方网站](https://staffdeck.openbmb.cn/)，或直接下载最新桌面客户端：
-
-| 平台 | 架构 | 下载 |
-| --- | --- | --- |
-| macOS | Apple Silicon（arm64） | [下载 `.dmg`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-macos-arm64.dmg) |
-| macOS | Intel（x86_64） | [下载 `.dmg`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-macos-x86_64.dmg) |
-| Windows | x64 | [下载安装程序 `.exe`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-windows-x64-setup.exe) |
-| Linux | x86_64（Debian/Ubuntu） | [下载 `.deb`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-linux-x86_64.deb) |
-
-Linux 安装包默认只监听本机 `127.0.0.1`。安装后可以在终端配置监听模式和
-端口，无头服务器也适用：
-
-```bash
-staffdeck setup
-staffdeck setup --mode local --port 5173
-staffdeck setup --mode lan --port 5173
-staffdeck setup --mode public --port 5173 --public-url https://staff.example.com
-```
-
-`local` 只允许本机访问；`lan` 和 `public` 监听 `0.0.0.0`。`--port` 用来
-设置监听端口。交互式终端下，`public` 会先尝试自动推断公网 URL；如果无法
-推断，或者是在无头环境中运行，就需要显式传入 `--public-url`。公网部署建议
-使用 HTTPS 反向代理；启用 OIDC 时，`OIDC_REDIRECT_URI` 应配置为同一个公网
-URL。配置按用户保存，并在下次启动时生效。
-
-## Agent 一键部署
-
-将下面的 Prompt 粘贴给 Cursor、Claude Code 或 Codex。代码部署时，也可以用
-`ULTRARAG_HOST`、`ULTRARAG_PORT` 和 `STAFFDECK_PUBLIC_URL` 覆盖启动参数：
-
-```text
-阅读 https://raw.githubusercontent.com/OpenBMB/StaffDeck/main/README.zh.md。
-克隆 OpenBMB/StaffDeck 私有仓库，准备 Python 3.11 或更高版本和 Node.js 20，创建
-backend/.venv，安装前后端依赖，将 backend/.env.example 复制为
-backend/.env；缺少 OpenAI 兼容模型地址或 API Key 时向我询问，并严格使用当前
-系统对应的文档命令。macOS/Linux/WSL 运行 scripts/dev_up.sh --detach，Windows
-PowerShell 运行 .\scripts\dev_up.ps1 --detach；验证 /api/health 和
-/workspace/gallery 后再报告完成。
-```
-
-
 ## 目录
 
-- [💡 关于StaffDeck](#-关于staffdeck)
+- [💡 关于 Staff Studio](#-关于-staff-studio)
   - [核心亮点](#核心亮点)
-  - [客户端下载](#客户端下载)
   - [Agent 一键部署](#agent-一键部署)
   - [目录](#目录)
   - [快速开始](#快速开始)
@@ -97,13 +24,11 @@ PowerShell 运行 .\scripts\dev_up.ps1 --detach；验证 /api/health 和
     - [常用命令](#常用命令)
       - [统一 Python 入口](#统一-python-入口)
   - [核心流程](#核心流程)
+  - [渠道接入（微信 / 企业微信）](#渠道接入微信--企业微信)
+  - [开放 API](#开放-api)
   - [项目结构](#项目结构)
   - [常见问题](#常见问题)
-  - [路线图](#路线图)
-- [💬 联系我们](#-联系我们)
-  - [参与贡献](#参与贡献)
   - [风险与限制](#风险与限制)
-  - [引用](#引用)
   - [许可证](#许可证)
   - [致谢](#致谢)
 
@@ -159,12 +84,12 @@ API Key 用于创建初始模型配置，存入数据库前会被加密。请勿
 
 ### 3. 启动 Web Demo
 
-| 平台 | 推荐命令 |
-| --- | --- |
-| macOS、Linux 或 WSL | `scripts/dev_up.sh --detach` |
-| Windows PowerShell | `.\scripts\dev_up.ps1 --detach` |
+| 平台                | 推荐命令                          |
+| ------------------- | --------------------------------- |
+| macOS、Linux 或 WSL | `scripts/dev_up.sh --detach`    |
+| Windows PowerShell  | `.\scripts\dev_up.ps1 --detach` |
 
-两套包装脚本最终都会调用同一个跨平台 Python 生命周期入口 `scripts/dev.py`。启动过程会构建 StaffDeck 前端，并由一个 FastAPI 进程在 `5173` 端口同时提供 UI、API 与 Swagger 文档。默认管理员账号为 `admin` / `admin`，请在首次登录后通过账号配置修改密码。
+两套包装脚本最终都会调用同一个跨平台 Python 生命周期入口 `scripts/dev.py`。启动过程会构建 Staff Studio 前端，并由一个 FastAPI 进程在 `5173` 端口同时提供 UI、API 与 Swagger 文档。默认管理员账号为 `admin` / `admin`，请在首次登录后通过账号配置修改密码。
 
 ### 4. 验证安装
 
@@ -190,35 +115,32 @@ curl.exe http://127.0.0.1:5173/api/health
 
 ### 常用命令
 
-| 操作 | macOS、Linux 或 WSL | Windows PowerShell |
-| --- | --- | --- |
-| 后台启动 | `scripts/dev_up.sh --detach` | `.\scripts\dev_up.ps1 --detach` |
-| 前台启动 | `scripts/dev_up.sh` | `.\scripts\dev_up.ps1` |
-| 查看服务状态 | `scripts/dev_status.sh` | `.\scripts\dev_status.ps1` |
-| 停止本地服务 | `scripts/dev_down.sh` | `.\scripts\dev_down.ps1` |
+| 操作         | macOS、Linux 或 WSL            | Windows PowerShell                |
+| ------------ | ------------------------------ | --------------------------------- |
+| 后台启动     | `scripts/dev_up.sh --detach` | `.\scripts\dev_up.ps1 --detach` |
+| 前台启动     | `scripts/dev_up.sh`          | `.\scripts\dev_up.ps1`          |
+| 查看服务状态 | `scripts/dev_status.sh`      | `.\scripts\dev_status.ps1`      |
+| 停止本地服务 | `scripts/dev_down.sh`        | `.\scripts\dev_down.ps1`        |
 
 #### 统一 Python 入口
 
 上述包装脚本最终都会调用 `scripts/dev.py`。也可以直接使用第 1 步创建的项目虚拟环境，避免依赖 Shell 脚本执行能力或系统 Python Launcher：
 
-| 平台 | 直接后台启动 |
-| --- | --- |
-| macOS、Linux 或 WSL | `backend/.venv/bin/python scripts/dev.py up --detach` |
-| Windows PowerShell | `.\backend\.venv\Scripts\python.exe scripts\dev.py up --detach` |
+| 平台                | 直接后台启动                                                      |
+| ------------------- | ----------------------------------------------------------------- |
+| macOS、Linux 或 WSL | `backend/.venv/bin/python scripts/dev.py up --detach`           |
+| Windows PowerShell  | `.\backend\.venv\Scripts\python.exe scripts\dev.py up --detach` |
 
 需要执行其他操作时，将 `up --detach` 替换为对应的生命周期参数：
 
-| 操作 | 参数 |
-| --- | --- |
-| 后台启动 | `up --detach` |
-| 前台启动 | `up` |
-| 查看服务状态 | `status` |
-| 停止本地服务 | `down` |
+| 操作         | 参数            |
+| ------------ | --------------- |
+| 后台启动     | `up --detach` |
+| 前台启动     | `up`          |
+| 查看服务状态 | `status`      |
+| 停止本地服务 | `down`        |
 
-> 完整说明 → [StaffDeck 使用教程](https://staffdeck.openbmb.cn/#/docs/introduce?lang=zh)
-
-
-
+> 完整说明 → [Staff Studio 使用教程](https://staffdeck.openbmb.cn/#/docs/introduce?lang=zh)
 
 ## 核心流程
 
@@ -237,7 +159,7 @@ curl.exe http://127.0.0.1:5173/api/health
 
 - 一个渠道账号挂载多个数字员工；`/员工`、`/切换 <名字>`、`/当前`、`/帮助` 指令调度；
 - 意图自动分发：按用户消息意图（LLM 分类）自动路由到最合适的员工，SOP 进行中提高切换阈值，人工接管与手动切换保护窗内保持粘性；
-- 身份合并：微信/企微用户可通过 `/绑定 <一次性码>` 把渠道身份合并到既有 StaffDeck 账号，记忆与会话统一，`/解绑` 可逆；
+- 身份合并：微信/企微用户可通过 `/绑定 <一次性码>` 把渠道身份合并到既有 Staff Studio 账号，记忆与会话统一，`/解绑` 可逆；
 - 对话记录与投递日志按天归纳分页；管理员与员工创建者可按权限查看全部渠道会话；
 - 可靠性：入站幂等去重、崩溃恢复、出站退避重试、token 失效自动告警与微信会话自愈。
 
@@ -267,9 +189,9 @@ curl.exe http://127.0.0.1:5173/api/health
 ## 项目结构
 
 ```text
-StaffDeck/
+StaffStudio/
 ├── backend/                  # FastAPI 接口、Agent 运行时、存储与任务 Worker
-├── frontend-enterprise/      # React/TypeScript StaffDeck 工作台
+├── frontend-enterprise/      # React/TypeScript Staff Studio 工作台
 ├── docs/                     # 教程、API、Schema 与示例流程
 ├── scripts/                  # 单端口服务生命周期与校验脚本
 ├── packaging/                # macOS、Linux 与 Windows 打包资源
@@ -277,67 +199,28 @@ StaffDeck/
 └── README.zh.md              # 简体中文
 ```
 
-
 ## 常见问题
 
 <details>
 <summary><strong>页面可以打开，但数字员工不回答。</strong></summary>
 
 检查所选模型配置、API Key、模型名和模型服务网络。随后查看执行记录与 `.dev/logs/app.log`，定位模型服务返回的具体错误。
+
 </details>
 
 <details>
 <summary><strong>没有本地 GPU 可以运行吗？</strong></summary>
 
 可以。应用调用 OpenAI 兼容模型接口，GPU 要求由你自行部署或使用的模型服务决定。
+
 </details>
 
 <details>
 <summary><strong>为什么普通用户可以使用广场资源，但不能编辑？</strong></summary>
 
 广场资源是可复用模板。普通用户可将有权限的资源复制或绑定到自己的员工，原始资源仍由创建者与管理员权限保护。
+
 </details>
-
-## 路线图
-
-- [ ] 群聊，多数字员工沟通/分工
-- [x] 更多企业连接器与经过审核的广场资源（已支持微信、企业微信渠道接入）
-- [ ] 面向高风险工具动作的细粒度审批策略
-
-路线优先级由真实部署需求驱动。请通过 [Issue](https://github.com/OpenBMB/StaffDeck/issues) 提供可复现的场景和预期行为。
-
-# 💬 联系我们
-- 关于技术问题及功能请求，请提交 [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
-- 商业授权请填写[飞书问卷](https://modelbest.feishu.cn/share/base/form/shrcnLAF6EpCi8lXhTS3VYnWc4g)
-- 为了商业合作，请联系：
-  ```
-  agentverse@modelbest.cn
-  ```
-- 欢迎加入我们的社区与我们交流：
-
-<table width="100%">
-<tr>
-<td width="33%" align="center"><b>微信交流群</b></td>
-<td width="33%" align="center"><b>飞书交流群</b></td>
-<td width="33%" align="center"><b>Discord 社区</b></td>
-</tr>
-<tr>
-<td align="center"><img src="packaging/assets/qr-wechat.png" width="200" alt="微信二维码"/></td>
-<td align="center"><img src="packaging/assets/qr-feishu.jpg" width="200" alt="飞书二维码"/></td>
-<td align="center"><img src="packaging/assets/qr-discord.png" width="200" alt="Discord 二维码"/></td>
-</tr>
-</table>
-
-## 参与贡献
-
-欢迎获得仓库权限的协作者参与：
-
-- 提交可复现的 Bug 与权限问题
-- 提议数字员工、知识、技能、SOP 或工具流程
-- 提交范围清晰、包含测试与浏览器校验的 PR
-- 改进文档和中英翻译
-
-请保留工作区中与任务无关的修改，根据影响范围补充测试，并在 PR 中写明完成 UI 校验的路由与用户角色。
 
 ## 风险与限制
 
@@ -348,32 +231,10 @@ StaffDeck/
 - 本项目不能替代法律、医疗、金融、安全及其他受监管领域的专业审核。
 - 未获得适当授权、隐私保护与人工监督时，不得使用本平台处理数据或自动作出重要决定。
 
-## 引用
-
-在内部研究或经授权的公开材料中使用 StaffDeck 时，可引用：
-
-```bibtex
-@software{StaffDeck2026,
-  title  = {StaffDeck: Build, Run, and Govern Enterprise Digital Employees},
-  author = {OpenBMB},
-  year   = {2026},
-  url    = {https://github.com/OpenBMB/StaffDeck}
-}
-```
-## Star 历史
-
-<a href="https://www.star-history.com/?repos=openbmb%2Fstaffdeck&type=date&legend=top-left">
- <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=openbmb/staffdeck&type=date&theme=dark&legend=top-left&sealed_token=lLohLC57bGAPh4lrzSYu2xW6Fmkavbj5r-T25GGt-jA10veIrv9OBPs0wiE5A98VIxP0NyxjbloW1t5OnPdVn6RT_L6Dmsp5EnfiWsGirs6G3Bv5_l_zUw" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=openbmb/staffdeck&type=date&legend=top-left&sealed_token=lLohLC57bGAPh4lrzSYu2xW6Fmkavbj5r-T25GGt-jA10veIrv9OBPs0wiE5A98VIxP0NyxjbloW1t5OnPdVn6RT_L6Dmsp5EnfiWsGirs6G3Bv5_l_zUw" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=openbmb/staffdeck&type=date&legend=top-left&sealed_token=lLohLC57bGAPh4lrzSYu2xW6Fmkavbj5r-T25GGt-jA10veIrv9OBPs0wiE5A98VIxP0NyxjbloW1t5OnPdVn6RT_L6Dmsp5EnfiWsGirs6G3Bv5_l_zUw" />
- </picture>
-</a>
-
 ## 许可证
 
 本项目基于 GNU Affero General Public License v3.0 开源。
 
 ## 致谢
 
-StaffDeck 由 [OpenBMB](https://www.openbmb.cn/) 生态孵化。
+Staff Studio 由 [OpenBMB](https://www.openbmb.cn/) 生态孵化。

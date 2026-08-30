@@ -22,7 +22,7 @@ def pilotdeck_origin_session_ids(
     tenant_id: str,
     session_ids: Iterable[str] | None = None,
 ) -> set[str]:
-    """Return StaffDeck sessions created for hidden PilotDeck collaboration.
+    """Return Staff Studio sessions created for hidden PilotDeck collaboration.
 
     Open API sessions persist the source on the external binding. The legacy chat
     adapter used the request channel, which is now also stored on the session. The

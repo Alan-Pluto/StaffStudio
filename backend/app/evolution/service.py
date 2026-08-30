@@ -38,7 +38,7 @@ from app.skills.skill_schema import SkillCard, SkillRewriteRequest, skill_card_f
 
 
 GENERAL_SKILL_EVOLUTION_PROMPT = """
-你是 StaffDeck 的通用技能改进器。根据当前 SKILL.md 和真实用户反馈，生成一次最小、可审核的改进。
+你是 Staff Studio 的通用技能改进器。根据当前 SKILL.md 和真实用户反馈，生成一次最小、可审核的改进。
 
 规则：
 - 只修复证据直接支持的问题，不扩写无关能力。

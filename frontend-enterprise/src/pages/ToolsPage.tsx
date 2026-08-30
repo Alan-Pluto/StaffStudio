@@ -2183,7 +2183,7 @@ function A2AConnectionFields({
   return (
     <div className="flex flex-col gap-[14px] rounded-[14px] border border-sky-200 bg-sky-50/40 p-[16px]">
       <div className="flex flex-wrap items-start justify-between gap-[12px]">
-        <div><p className="text-[13px] font-semibold text-[#2f3442]">A2A 长任务连接</p><p className="mt-[4px] text-[11px] leading-[17px] text-[#687083]">自动发现 Agent Card；优先流式订阅，断线后回退轮询。任务、事件和产物由 StaffDeck 持久化。</p></div>
+        <div><p className="text-[13px] font-semibold text-[#2f3442]">A2A 长任务连接</p><p className="mt-[4px] text-[11px] leading-[17px] text-[#687083]">自动发现 Agent Card；优先流式订阅，断线后回退轮询。任务、事件和产物由 Staff Studio 持久化。</p></div>
         {adapter && <UIButton type="button" variant="outline" size="sm" onClick={useCodex} disabled={!adapter.enabled}><TerminalSquare className="size-[14px]" />{adapter.enabled ? '连接本机 Codex' : 'Codex Adapter 未启用'}</UIButton>}
       </div>
       <div className="grid gap-[12px] md:grid-cols-2">

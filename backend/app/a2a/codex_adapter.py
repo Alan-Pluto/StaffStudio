@@ -213,7 +213,7 @@ def _submit_message_locked(
         return _require_task(existing_id), stream_after
 
     settings = get_settings()
-    workspace_root = Path(settings.codex_a2a_workspace_root or "/tmp/staffdeck-codex-a2a")
+    workspace_root = Path(settings.codex_a2a_workspace_root or "/tmp/staff-studio-codex-a2a")
     task_public_id = uuid.uuid4().hex
     workspace = (workspace_root / task_public_id).resolve()
     workspace.mkdir(parents=True, exist_ok=True)

@@ -31,7 +31,7 @@ _atexit_registered = False
 
 
 class _RuntimeFileHandler(RotatingFileHandler):
-    """Marker subclass used to replace an existing StaffDeck file handler."""
+    """Marker subclass used to replace an existing Staff Studio file handler."""
 
 
 class _DroppingQueueHandler(QueueHandler):
@@ -140,7 +140,7 @@ def configure_runtime_logging() -> Path:
 
 
 def shutdown_runtime_logging() -> None:
-    """Flush queued records and close StaffDeck-owned logging resources."""
+    """Flush queued records and close Staff Studio-owned logging resources."""
     global _configured_path, _file_handler, _listener, _queue_handler
 
     listener = _listener

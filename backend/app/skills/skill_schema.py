@@ -140,7 +140,7 @@ class SkillCard(BaseModel):
 def skill_card_from_persisted(value: Any) -> SkillCard:
     """Load legacy persisted SOP data without weakening write-time validation.
 
-    Older StaffDeck versions allowed a required capability to be stored without
+    Older Staff Studio versions allowed a required capability to be stored without
     also listing it among the node's selected capabilities. Required capabilities
     are necessarily visible to the node, so promote those legacy references before
     applying the current strict SkillCard schema.

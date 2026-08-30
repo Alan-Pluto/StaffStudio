@@ -154,7 +154,7 @@ def validate_discovered_skill(payload: dict[str, Any]) -> SkillCard:
             details.append(f"{field}: {error.get('msg', '字段不合法')}")
         suffix = f"：{'；'.join(details)}" if details else "。"
         raise KnowledgeDiscoveryValidationError(
-            f"技能草稿不符合 StaffDeck SkillCard 格式{suffix}"
+            f"技能草稿不符合 Staff Studio SkillCard 格式{suffix}"
         ) from exc
 
     if not card.skill_id.strip() or not card.name.strip():

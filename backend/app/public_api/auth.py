@@ -167,7 +167,7 @@ def get_public_principal(
         raise PublicAPIError(401, "NOT_AUTHENTICATED", "A Bearer API key is required.")
     token = credentials.credentials
     if not token.startswith(PUBLIC_KEY_PREFIX):
-        raise PublicAPIError(401, "API_KEY_REQUIRED", "A StaffDeck sd_* API key is required.")
+        raise PublicAPIError(401, "API_KEY_REQUIRED", "A Staff Studio sd_* API key is required.")
     principal = _api_key_principal(token, db)
     request.state.public_principal = principal
     return principal

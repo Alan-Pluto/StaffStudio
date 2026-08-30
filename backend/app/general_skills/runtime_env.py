@@ -64,7 +64,7 @@ def _backend_dir() -> Path:
 def _bundled_python() -> Path:
     # 打包态：附带的 python-build-standalone 位置随平台不同。
     # - macOS .app：runtime 在 Contents/Resources/runtime（放 Resources 是为了 codesign 密封通过），
-    #   sys.executable 在 Contents/MacOS/staffdeck，需跳到同级的 Resources。
+    #   sys.executable 在 Contents/MacOS/staff-studio，需跳到同级的 Resources。
     # - Linux/Windows onedir：runtime 在可执行文件同级 runtime/。
     # 不用 resource_dir()==sys._MEIPASS（onedir 下指向 _internal/）。
     exe_dir = Path(sys.executable).resolve().parent

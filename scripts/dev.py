@@ -232,7 +232,7 @@ def _ensure_sandbox_runtime() -> None:
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
     node = runtime / "bin" / ("node.exe" if sys.platform == "win32" else "node")
     manager = cli.parent / "sandbox" / "sandbox-manager.js"
-    marker = "staffdeck-allow-all-domains-patch-v1"
+    marker = "staff-studio-allow-all-domains-patch-v1"
     try:
         if node.is_file() and cli.is_file() and marker in manager.read_text(encoding="utf-8"):
             return

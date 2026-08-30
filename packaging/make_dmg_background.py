@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a lightweight StaffDeck DMG background without external deps."""
+"""Generate a lightweight Staff Studio DMG background without external deps."""
 
 from __future__ import annotations
 

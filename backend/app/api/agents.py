@@ -93,7 +93,7 @@ enterprise_router = APIRouter(prefix="/api/enterprise/agents", tags=["enterprise
 chat_router = APIRouter(prefix="/api/chat/agents", tags=["chat:agents"])
 scope_router = APIRouter(prefix="/api/enterprise/agent-scope", tags=["enterprise:agent-scope"])
 
-STAFFDECK_AGENT_API_CLIENT_NAME = "StaffDeck 员工 API 密钥"
+STAFF_STUDIO_AGENT_API_CLIENT_NAME = "Staff Studio 员工 API 密钥"
 
 
 @scope_router.get("", response_model=AgentScopeRead)
@@ -1077,7 +1077,7 @@ def _ensure_staffdeck_agent_api_client(
     row = db.exec(
         select(APIClient).where(
             APIClient.tenant_id == tenant_id,
-            APIClient.name == STAFFDECK_AGENT_API_CLIENT_NAME,
+            APIClient.name == STAFF_STUDIO_AGENT_API_CLIENT_NAME,
         )
     ).first()
     required_scopes = sorted({"credentials:write", *AGENT_KEY_ALLOWED_SCOPES})
@@ -1091,7 +1091,7 @@ def _ensure_staffdeck_agent_api_client(
         return row
     row = APIClient(
         tenant_id=tenant_id,
-        name=STAFFDECK_AGENT_API_CLIENT_NAME,
+        name=STAFF_STUDIO_AGENT_API_CLIENT_NAME,
         description="由数字员工设置页管理的单员工运行密钥。",
         scopes_json=required_scopes,
         created_by_user_id=current_user.id,

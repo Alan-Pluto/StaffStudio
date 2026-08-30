@@ -22,7 +22,7 @@ class CapabilityErrorInfo:
         for namespace, value in extensions.items():
             if (
                 not re.fullmatch(r"[a-z][a-z0-9_]*", namespace)
-                or namespace in {"core", "staffdeck"}
+                or namespace in {"core", "staff_studio"}
                 or not isinstance(value, dict)
             ):
                 raise ValueError(f"invalid provider error extension namespace: {namespace}")

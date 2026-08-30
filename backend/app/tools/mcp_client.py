@@ -790,7 +790,7 @@ def _initialize_params(config: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "protocolVersion": "2024-11-05",
         "capabilities": capabilities,
-        "clientInfo": {"name": "StaffDeck", "version": "0.1.0"},
+        "clientInfo": {"name": "Staff Studio", "version": "0.1.0"},
     }
 
 

@@ -13,12 +13,12 @@ def _bundled_version() -> str | None:
     candidates: list[Path] = []
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
-        candidates.append(Path(bundle_root) / "staffdeck-version.txt")
+        candidates.append(Path(bundle_root) / "staff-studio-version.txt")
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable).resolve()
-        candidates.append(executable.parent / "staffdeck-version.txt")
+        candidates.append(executable.parent / "staff-studio-version.txt")
         if sys.platform == "darwin" and len(executable.parents) >= 2:
-            candidates.append(executable.parents[1] / "Resources" / "staffdeck-version.txt")
+            candidates.append(executable.parents[1] / "Resources" / "staff-studio-version.txt")
     for candidate in candidates:
         try:
             value = candidate.read_text(encoding="utf-8").strip()
@@ -31,14 +31,14 @@ def _bundled_version() -> str | None:
 
 def app_version() -> str:
     return (
-        os.environ.get("STAFFDECK_VERSION", "").strip()
+        os.environ.get("STAFF_STUDIO_VERSION", "").strip()
         or _bundled_version()
         or DEFAULT_APP_VERSION
     )
 
 
 def update_check_enabled() -> bool:
-    configured = os.environ.get("STAFFDECK_UPDATE_CHECK", "").strip().lower()
+    configured = os.environ.get("STAFF_STUDIO_UPDATE_CHECK", "").strip().lower()
     if configured in _TRUE_VALUES:
         return True
     if configured in _FALSE_VALUES:

@@ -62,7 +62,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     expect(screen.getByText('我们来做什么？')).toBeTruthy();
-    expect(screen.getByAltText('StaffDeck 产品预览')).toBeTruthy();
+    expect(screen.getByAltText('Staff Studio 产品预览')).toBeTruthy();
     expect(screen.queryByLabelText('账号')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: '登录' }));

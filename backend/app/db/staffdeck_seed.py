@@ -71,7 +71,7 @@ ModelT = TypeVar("ModelT", bound=SQLModel)
 
 
 def seed_staffdeck_admin_gallery(session: Session) -> None:
-    """Seed the curated StaffDeck gallery package as admin-owned resources."""
+    """Seed the curated Staff Studio gallery package as admin-owned resources."""
 
     data = _load_seed_fixtures((FIXTURE_PATH, EXPANDED_FIXTURE_PATH))
     if not data:

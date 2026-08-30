@@ -57,7 +57,7 @@ def _download(url: str, destination: Path, *, attempts: int = 5) -> None:
         try:
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": "StaffDeck-runtime-fetch/1.0", "Accept": "application/octet-stream"},
+                headers={"User-Agent": "Staff-Studio-runtime-fetch/1.0", "Accept": "application/octet-stream"},
             )
             with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
                 while chunk := response.read(1024 * 1024):

@@ -14,7 +14,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
-SMOKE_PYTHON = Path(os.environ.get("STAFFDECK_SMOKE_PYTHON", sys.executable)).resolve()
+SMOKE_PYTHON = Path(os.environ.get("STAFF_STUDIO_SMOKE_PYTHON", sys.executable)).resolve()
 CHECK_NAMES = (
     "network_all",
     "network_allowlist",
@@ -32,12 +32,12 @@ def main() -> int:
     parser.add_argument("--check", action="append", choices=CHECK_NAMES)
     args = parser.parse_args()
     runtime = args.runtime.resolve()
-    os.environ["STAFFDECK_SRT_RUNTIME"] = str(runtime)
+    os.environ["STAFF_STUDIO_SRT_RUNTIME"] = str(runtime)
 
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root / "backend"))
 
-    with tempfile.TemporaryDirectory(prefix="staffdeck-sandbox-smoke-") as raw_root:
+    with tempfile.TemporaryDirectory(prefix="staff-studio-sandbox-smoke-") as raw_root:
         root = Path(raw_root)
         data_root = root / "host-data"
         data_root.mkdir()
@@ -108,7 +108,7 @@ def _run(
         network_mode=network_mode,
         allowed_domains=allowed_domains,
     )
-    if os.environ.get("STAFFDECK_SMOKE_VERBOSE") == "1":
+    if os.environ.get("STAFF_STUDIO_SMOKE_VERBOSE") == "1":
         print(
             json.dumps(
                 {

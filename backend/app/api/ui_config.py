@@ -97,10 +97,10 @@ def ui_config_read(row: UIConfig, *, restart_scheduled: bool = False) -> UIConfi
         sandbox_backend=report.backend if report is not None else "disabled",
         sandbox_setup_required=windows_setup_required,
         sandbox_setup_instructions=(
-            "StaffDeck 服务运行在 Windows 主机上，首次启用安全执行环境需要一次管理员确认。\n"
+            "Staff Studio 服务运行在 Windows 主机上，首次启用安全执行环境需要一次管理员确认。\n"
             "请在这台 Windows 电脑上打开 PowerShell 或 CMD（右键并选择‘以管理员身份运行’），执行：\n"
             f"{windows_install_command()}\n"
-            "确认 UAC 后等待初始化完成，然后重启 StaffDeck 服务。"
+            "确认 UAC 后等待初始化完成，然后重启 Staff Studio 服务。"
             if windows_setup_required
             else (
                 f"沙盒状态：{report.message}\n{report.remediation}"
@@ -210,7 +210,7 @@ _restart_scheduled = False
 
 
 def _schedule_application_restart(delay_seconds: float = 1.0) -> None:
-    """Exit after the response is flushed; the service supervisor restarts StaffDeck."""
+    """Exit after the response is flushed; the service supervisor restarts Staff Studio."""
 
     global _restart_scheduled
     with _restart_lock:

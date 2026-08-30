@@ -36,7 +36,7 @@ def problem_response(
 ) -> JSONResponse:
     request_id = str(getattr(request.state, "request_id", ""))
     payload: dict[str, Any] = {
-        "type": f"urn:staffdeck:error:{code.lower()}",
+        "type": f"urn:staff-studio:error:{code.lower()}",
         "title": code,
         "status": status_code,
         "code": code,

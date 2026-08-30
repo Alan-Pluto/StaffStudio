@@ -163,7 +163,7 @@ def resolve_or_provision_user(
     *,
     name_resolver: Callable[[str], str | None] | None = None,
 ) -> User:
-    """按 (tenant, channel, scope, external_id) 解析 StaffDeck 用户，不存在则开通懒建账号。
+    """按 (tenant, channel, scope, external_id) 解析 Staff Studio 用户，不存在则开通懒建账号。
 
     name_resolver 可选:传入 open_id 返回真实姓名;用于将占位 display_name 替换为渠道真实名。
     """
@@ -378,7 +378,7 @@ def migrate_scope_for_binding(
         )
         if conflict and conflict.id != row.id and conflict.staffdeck_user_id != row.staffdeck_user_id:
             raise IdentityScopeConflict(
-                "目标企业中该渠道身份已关联其他 StaffDeck 用户: "
+                "目标企业中该渠道身份已关联其他 Staff Studio 用户: "
                 f"external_user_id={new_external_id}"
             )
         migration_rows.append((row, new_external_id, conflict))

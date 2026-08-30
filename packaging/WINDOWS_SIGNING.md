@@ -1,6 +1,6 @@
 # Windows code signing
 
-StaffDeck uses Authenticode signing for the packaged application, the bundled
+Staff Studio uses Authenticode signing for the packaged application, the bundled
 Node/SRT executables, the Inno Setup uninstaller, and the final installer.
 Signing is required for any package distributed to another Windows machine.
 
@@ -23,7 +23,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\build_windows.
 ## PFX file
 
 ```powershell
-$env:WINDOWS_PFX_PATH = "C:\secure\staffdeck-code-signing.pfx"
+$env:WINDOWS_PFX_PATH = "C:\secure\staff-studio-code-signing.pfx"
 $env:WINDOWS_PFX_PASSWORD = "<secret>"
 $env:VERSION = "0.1.0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\build_windows.ps1
@@ -58,6 +58,6 @@ service and can be overridden when required.
 
 When no certificate or external signer is configured, the build continues and
 marks the output as `UNSIGNED`. On Windows hosts where application-control
-policy blocks the bundled SRT, StaffDeck will show a high-risk degraded mode
+policy blocks the bundled SRT, Staff Studio will show a high-risk degraded mode
 and execute without SRT. Configure a trusted signer for production deployments
 to preserve process and filesystem isolation.

@@ -159,7 +159,7 @@ class GeneralSkillFile:
 
 @dataclass(frozen=True)
 class GeneralSkillPackage:
-    """Immutable content snapshot loaded by StaffDeck and executed by its local Runner."""
+    """Immutable content snapshot loaded by Staff Studio and executed by its local Runner."""
 
     package_id: str
     slug: str
@@ -193,7 +193,7 @@ class SceneSkillCatalog(Protocol):
 
 
 class GeneralSkillCatalog(Protocol):
-    """Loads Skill content; execution remains inside StaffDeck."""
+    """Loads Skill content; execution remains inside Staff Studio."""
 
     provider_id: str
 

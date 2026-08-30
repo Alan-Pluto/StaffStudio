@@ -27,7 +27,7 @@
   "sample_arguments": {}
 }
 
-技能建议 payload 建议格式。以下内容只示意 StaffDeck 字段结构，不是业务模板；
+技能建议 payload 建议格式。以下内容只示意 Staff Studio 字段结构，不是业务模板；
 所有名称、说明、字段和流程必须来自当前文档，不得复用示例业务内容：
 {
   "draft_skill": {
@@ -90,7 +90,7 @@
 - edges 中每项必须包含 `source_node_id`、`next_node_id`，不要使用 `source`/`target` 或 `from`/`to` 代替。
 - 所有节点都必须能从 `start_node_id` 到达，且最终能到达 `terminal_node_ids` 中的至少一个结束节点。
 - 只能使用原文明示的业务流程和业务字段，不得为补齐结构编造业务步骤或工具。
-- `ask_user`、`continue_flow`、`answer_user`、`handoff_human` 是 StaffDeck 平台编排动作，可以按节点职责配置；它们不是文档中的业务事实。
+- `ask_user`、`continue_flow`、`answer_user`、`handoff_human` 是 Staff Studio 平台编排动作，可以按节点职责配置；它们不是文档中的业务事实。
 - `skill_id` 必须根据当前文档生成具体且有区分度的稳定标识，不得直接复用示例中的 `request.approval`。
 
 输出格式：

@@ -1,32 +1,7 @@
-<div align="center">
 
-<img src="packaging/assets/staffdeck_banner_en.png" alt="StaffDeck logo" />
+# 💡 About Staff Studio
 
-<p align="center">
-  <a href="https://staffdeck.openbmb.cn/"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
-  <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
-  <br/>
-  <a href="#-Community"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  &nbsp;
-  <a href="#-Community"><img src="https://img.shields.io/badge/Feishu-Community-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
-  &nbsp;
-  <a href="#-Community"><img src="https://img.shields.io/badge/WeChat-Community-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
-  <br/>
-</p>
-
-**English** | [简体中文](./README.zh.md)
-</div>
-
-## News
-- **2026-08-18**: We present v0.4.0 for multi-staff cooperation and faster runing.
-- **2026-08-06**: We present  v0.3.0 for SOP editing and sandbox.
-- **2026-08-03**: We present v0.2.0 for harnessv2 and IM system.
-- **2026-07-15**: StaffDeck is now open source! We welcome your feedback and support with a Star.
-
-# 💡 About StaffDeck
-
-StaffDeck is an enterprise platform for building and managing digital employees. It helps professionals turn their work experience, business processes, and decision criteria into digital employees that can operate continuously, take over repetitive tasks, and preserve individual expertise as reusable, evolvable, and traceable organizational assets. StaffDeck is jointly developed by the [ModelBest](https://modelbest.cn/), [NEU-ModelBest Data Intelligence Joint Lab](https://neuir.github.io/), [THUNLP](https://nlp.csai.tsinghua.edu.cn/), [OpenBMB](https://www.openbmb.cn/home), and [AI9Stars](https://github.com/AI9Stars) for enterprises and institutions seeking to advance AI from a personal productivity tool to an organizational capability.
+Staff Studio is an enterprise platform for building and managing digital employees. It helps professionals turn their work experience, business processes, and decision criteria into digital employees that can operate continuously, take over repetitive tasks, and preserve individual expertise as reusable, evolvable, and traceable organizational assets. Staff Studio is jointly developed by the [ModelBest](https://modelbest.cn/), [NEU-ModelBest Data Intelligence Joint Lab](https://neuir.github.io/), [THUNLP](https://nlp.csai.tsinghua.edu.cn/), [OpenBMB](https://www.openbmb.cn/home), and [AI9Stars](https://github.com/AI9Stars) for enterprises and institutions seeking to advance AI from a personal productivity tool to an organizational capability.
 
 ## Core Features
 
@@ -37,7 +12,7 @@ StaffDeck is an enterprise platform for building and managing digital employees.
 
 ## Desktop Downloads
 
-Visit the [StaffDeck official website](https://staffdeck.openbmb.cn/) or download the latest desktop release directly:
+Visit the [Staff Studio official website](https://staffdeck.openbmb.cn/) or download the latest desktop release directly:
 
 | Platform | Architecture | Download |
 | --- | --- | --- |
@@ -46,14 +21,14 @@ Visit the [StaffDeck official website](https://staffdeck.openbmb.cn/) or downloa
 | Windows | x64 | [Download installer `.exe`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-windows-x64-setup.exe) |
 | Linux | x86_64 (Debian/Ubuntu) | [Download `.deb`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-linux-x86_64.deb) |
 
-Linux packages listen on `127.0.0.1` by default. Use `staffdeck setup` from a
+Linux packages listen on `127.0.0.1` by default. Use `staff-studio setup` from a
 terminal to choose the listening mode and port, including on a headless host:
 
 ```bash
-staffdeck setup
-staffdeck setup --mode local --port 5173
-staffdeck setup --mode lan --port 5173
-staffdeck setup --mode public --port 5173 --public-url https://staff.example.com
+staff-studio setup
+staff-studio setup --mode local --port 5173
+staff-studio setup --mode lan --port 5173
+staff-studio setup --mode public --port 5173 --public-url https://staff.example.com
 ```
 
 `local` listens only on the machine; `lan` and `public` listen on `0.0.0.0`.
@@ -67,7 +42,7 @@ setup is saved per user and applied on the next launch.
 
 Paste the prompt below into Cursor, Claude Code, or Codex. For code-based
 deployments, you can also override the launch at runtime with
-`ULTRARAG_HOST`, `ULTRARAG_PORT`, and `STAFFDECK_PUBLIC_URL`:
+`ULTRARAG_HOST`, `ULTRARAG_PORT`, and `STAFF_STUDIO_PUBLIC_URL`:
 
 ```text
 Read https://raw.githubusercontent.com/OpenBMB/StaffDeck/main/README.md.
@@ -83,7 +58,7 @@ plus /workspace/gallery before reporting success.
 
 ## Table of Contents
 
-- [💡 About StaffDeck](#-about-staffdeck)
+- [💡 About Staff Studio](#-about-staff-studio)
   - [Core Features](#core-features)
   - [Desktop Downloads](#desktop-downloads)
   - [Agent-Friendly Quick Deploy](#agent-friendly-quick-deploy)
@@ -97,6 +72,7 @@ plus /workspace/gallery before reporting success.
     - [Useful Commands](#useful-commands)
       - [Unified Python Entry](#unified-python-entry)
   - [Core Workflows](#core-workflows)
+  - [Channel Integration (WeChat / WeCom)](#channel-integration-wechat--wecom)
   - [Project Structure](#project-structure)
   - [FAQ](#faq)
   - [Roadmap](#roadmap)
@@ -104,6 +80,7 @@ plus /workspace/gallery before reporting success.
   - [Contributing](#contributing)
   - [Risks and Limitations](#risks-and-limitations)
   - [Citation](#citation)
+  - [Star History](#star-history)
   - [License](#license)
   - [Acknowledgments](#acknowledgments)
 
@@ -164,7 +141,7 @@ The API key is used to create the initial model configuration and is encrypted b
 | macOS, Linux, or WSL | `scripts/dev_up.sh --detach` |
 | Windows PowerShell | `.\scripts\dev_up.ps1 --detach` |
 
-Both wrappers call the same cross-platform Python lifecycle entry, `scripts/dev.py`. The startup process builds the StaffDeck frontend and serves the UI, API, and Swagger documentation from one FastAPI process on port `5173`.
+Both wrappers call the same cross-platform Python lifecycle entry, `scripts/dev.py`. The startup process builds the Staff Studio frontend and serves the UI, API, and Swagger documentation from one FastAPI process on port `5173`.
 
 Initial administrator credentials: username `admin`, password `admin`. Please change the password after first login.
 
@@ -217,7 +194,7 @@ Replace `up --detach` with another lifecycle argument when needed:
 | Inspect service status | `status` |
 | Stop the local service | `down` |
 
-> Full guide → [StaffDeck Tutorial](https://staffdeck.openbmb.cn/#/docs/introduce?lang=en)
+> Full guide → [Staff Studio Tutorial](https://staffdeck.openbmb.cn/#/docs/introduce?lang=en)
 
 
 
@@ -239,7 +216,7 @@ Digital employees can serve users directly over IM channels: users chat with emp
 
 - Mount multiple digital employees on one channel account; dispatch with `/员工`, `/切换 <name>`, `/当前`, `/帮助`;
 - Intent auto-routing: each message is classified by an LLM and routed to the best-matching employee (stricter threshold during SOPs; sticky during human handoff and after manual switches);
-- Identity merge: channel users run `/绑定 <one-time code>` to merge their channel identity into an existing StaffDeck account (memory and sessions unified; `/解绑` to revert);
+- Identity merge: channel users run `/绑定 <one-time code>` to merge their channel identity into an existing Staff Studio account (memory and sessions unified; `/解绑` to revert);
 - Conversation history and delivery logs grouped by day with pagination; admins and employee creators can review all channel conversations per permission;
 - Reliability: inbound idempotency, crash recovery, outbound retry with backoff, token-expiry alerts, and WeChat session self-healing.
 
@@ -265,9 +242,9 @@ Digital employees can serve users directly over IM channels: users chat with emp
 ## Project Structure
 
 ```text
-StaffDeck/
+StaffStudio/
 ├── backend/                  # FastAPI APIs, agent runtime, storage, and task workers
-├── frontend-enterprise/      # React/TypeScript StaffDeck workspace
+├── frontend-enterprise/      # React/TypeScript Staff Studio workspace
 ├── docs/                     # Tutorials, APIs, schemas, and example flows
 ├── scripts/                  # Single-port service lifecycle and validation scripts
 ├── packaging/                # macOS, Linux, and Windows packaging assets
@@ -285,7 +262,7 @@ Check the selected model configuration, API key, model name, and model service n
 </details>
 
 <details>
-<summary><strong>Can StaffDeck run without a local GPU?</strong></summary>
+<summary><strong>Can Staff Studio run without a local GPU?</strong></summary>
 
 Yes. The application calls an OpenAI-compatible model endpoint, so GPU requirements depend on the model service you deploy or use.
 </details>
@@ -349,11 +326,11 @@ Keep unrelated worktree changes intact, add tests proportional to the affected b
 
 ## Citation
 
-When using StaffDeck in internal research or authorized public materials, cite:
+When using Staff Studio in internal research or authorized public materials, cite:
 
 ```bibtex
-@software{StaffDeck2026,
-  title  = {StaffDeck: Build, Run, and Govern Enterprise Digital Employees},
+@software{StaffStudio2026,
+  title  = {Staff Studio: Build, Run, and Govern Enterprise Digital Employees},
   author = {OpenBMB},
   year   = {2026},
   url    = {https://github.com/OpenBMB/StaffDeck}
@@ -375,4 +352,4 @@ This project is open source under the GNU Affero General Public License v3.0.
 
 ## Acknowledgments
 
-StaffDeck is incubated by the [OpenBMB](https://www.openbmb.cn/) ecosystem.
+Staff Studio is incubated by the [OpenBMB](https://www.openbmb.cn/) ecosystem.

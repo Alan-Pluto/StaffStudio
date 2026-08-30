@@ -9,7 +9,7 @@ from app.db.database_path import sqlite_database_path
 
 
 class RuntimeInstanceLockError(RuntimeError):
-    """Raised when another StaffDeck process already owns the SQLite runtime."""
+    """Raised when another Staff Studio process already owns the SQLite runtime."""
 
 
 _lock_handle: IO[str] | None = None
@@ -74,7 +74,7 @@ def acquire_runtime_instance_lock() -> Path | None:
         owner = handle.read().strip() or "unknown"
         handle.close()
         raise RuntimeInstanceLockError(
-            f"Another StaffDeck process already owns {database_path} (pid={owner})."
+            f"Another Staff Studio process already owns {database_path} (pid={owner})."
         ) from exc
 
     handle.seek(0)

@@ -25,8 +25,8 @@ def help_text(channel: str) -> str:
         "/切换 <名字> 切换到指定员工\n"
         "/当前 查看当前员工\n"
         "/回复反馈 <内容> 回复人工转接通知\n"
-        f"/绑定 <绑定码> 把{label}账号绑定到你的 StaffDeck 账号\n"
-        f"/解绑 解除{label}账号与 StaffDeck 账号的绑定\n"
+        f"/绑定 <绑定码> 把{label}账号绑定到你的 Staff Studio 账号\n"
+        f"/解绑 解除{label}账号与 Staff Studio 账号的绑定\n"
         "/帮助 查看本说明"
     )
 
